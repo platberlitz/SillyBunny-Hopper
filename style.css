@@ -27,9 +27,13 @@ dialog.popup.sbtw-popup {
 }
 
 dialog.popup.sbtw-popup::backdrop {
-    /* Don't blur the app behind it - the point is that the top bar stays readable. */
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
+    /*
+     * Don't blur the app behind it - the point is that the top bar stays readable. The
+     * !important is not decoration: the Moonlit theme sets backdrop-filter with !important
+     * on .popup[open]::backdrop, and matching specificity alone does not beat that.
+     */
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
     background-color: color-mix(in srgb, black 30%, transparent);
 }
 
@@ -39,7 +43,9 @@ dialog.popup.sbtw-popup .popup-content {
     min-height: 0;
     margin: 0;
     padding: 0;
-    overflow: hidden;
+    /* Same reason: Moonlit forces overflow-y: auto !important on .popup-content, which
+       would wrap columns that already scroll themselves in a second scrollbar. */
+    overflow: hidden !important;
 }
 
 dialog.popup.sbtw-popup .popup-button-close {

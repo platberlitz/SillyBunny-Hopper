@@ -941,6 +941,40 @@ async function resetTimeline() {
 
 // --- opening --------------------------------------------------------------
 
+/**
+ * How far down the screen the feed has to start. --topBarBlockSize is the host's own
+ * variable, but a theme can restyle the bar without updating it - Moonlit reports 34px for
+ * a bar that actually ends at 40 - so measure the thing itself and keep the variable as a
+ * fallback for when none of the containers are on the page.
+ */
+function topbarOffset() {
+    let bottom = 0;
+    for (const id of ['sb-topbar-stack', 'top-bar', 'top-settings-holder']) {
+        const node = document.getElementById(id);
+        if (!node) {
+            continue;
+        }
+        const rect = node.getBoundingClientRect();
+        if (rect.height > 0 && rect.bottom > bottom) {
+            bottom = rect.bottom;
+        }
+    }
+    return Math.round(bottom);
+}
+
+function applyTopbarOffset() {
+    const dialog = state.popup?.dlg;
+    if (!dialog) {
+        return;
+    }
+    const offset = topbarOffset();
+    if (offset > 0) {
+        dialog.style.setProperty('--sbtw-topbar', `${offset}px`);
+    } else {
+        dialog.style.removeProperty('--sbtw-topbar');
+    }
+}
+
 export async function openFeed() {
     const context = globalThis.SillyTavern.getContext();
     state.feed = await api.loadFeed();
@@ -958,6 +992,8 @@ export async function openFeed() {
     });
     popup.dlg?.classList.add('sbtw-popup');
     state.popup = popup;
+    applyTopbarOffset();
+    window.addEventListener('resize', applyTopbarOffset);
 
     if (needsCatchUp(api.getSettings())) {
         refresh();
@@ -966,6 +1002,7 @@ export async function openFeed() {
     try {
         await popup.show();
     } finally {
+        window.removeEventListener('resize', applyTopbarOffset);
         state.popup = null;
         state.body = null;
         api.updateSettings({ lastSeenAt: Date.now() });
