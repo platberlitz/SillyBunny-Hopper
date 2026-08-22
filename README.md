@@ -2,7 +2,7 @@
 
 A pretend social timeline for your own cast. Your persona and the characters you invite each get an account, and pressing **Refresh** hands them to a model that writes a batch of posts, replies, reposts, likes and follows in one go. You can post by hand too, and like or reply to anything.
 
-It's fake. Nothing leaves your machine, nothing is posted anywhere real, and no account here belongs to a person who exists.
+It's fake. Nothing is posted anywhere real, and no account here belongs to a person who exists. One honest caveat: pressing Refresh sends your characters' profiles and the recent timeline to whichever model connection you have configured - that can be a local model, or a remote API. If you wouldn't paste it into that API's playground, don't put it on the timeline.
 
 I built this after seeing the Noodle in Marinara Engine and wanting the same thing in SillyBunny. This isn't a port - none of Marinara's plumbing would survive the trip - but the idea is theirs and the good structural decisions are theirs too. Credit where it's due.
 
@@ -46,7 +46,7 @@ The reply comes back as JSON and I don't trust a word of it. Before anything is 
 - Repeated text from the same account is dropped.
 - Votes have to name a real option on a real poll.
 
-If it drops things you'll get a note saying how many, and the details go to the console.
+If it drops things you'll usually get a note saying how many, and the details go to the console.
 
 If images are on, each generated image prompt goes through your existing image setup. A failed image just posts the text, which is what you'd want.
 
@@ -72,7 +72,7 @@ All of them live inside the feed window, under **Settings** in the left nav. The
 
 **Post text is never rendered as HTML.** It's inserted as text, with `@handles` turned into links. No markdown, which is also how the real thing works.
 
-**Resetting the timeline** clears posts, replies, likes and reposts, and keeps profiles, follows and settings.
+**Resetting the timeline** clears posts, replies, likes, reposts and votes, and keeps profiles, follows and settings. If the saved file can't be read when you open the feed, you get a Retry button and a Reset button - it never silently starts over an unreadable timeline.
 
 ## Not in this version
 
@@ -87,7 +87,7 @@ npm test        # lint + unit tests, no dependencies
 npm run lint    # syntax, formatting, manifest/package agreement
 ```
 
-Needs Node 20 or newer. `src/core.js` is pure - prompt building, parsing and every rule above - and is where the tests actually live. `src/api.js` is the only file that talks to the host, `src/ui.js` is the only one that touches the DOM.
+Needs Node 20.11 or newer (for `import.meta.dirname` in the lint script). `src/core.js` is pure - prompt building, parsing and every rule above - and is where the tests actually live. `src/api.js` is where nearly all host I/O lives; `index.js` wires the lifecycle events and `src/ui.js` is the only one that touches the DOM.
 
 ## License
 

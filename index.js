@@ -1,6 +1,6 @@
 // Boot and teardown only. Host I/O lives in src/api.js, DOM in src/ui.js, logic in src/core.js.
 
-import { assertCapabilities, applyCarryover, flushFeed, loadFeed } from './src/api.js';
+import { applyCarryover, flushFeed, loadFeed } from './src/api.js';
 import { mountAll, unmountAll } from './src/ui.js';
 
 let active = false;
@@ -41,7 +41,9 @@ function start() {
     if (active) {
         return;
     }
-    const context = assertCapabilities();
+    // Host compatibility is guaranteed by the manifest's minimum version, not by
+    // probing individual APIs; optional features check at their point of use.
+    const context = ctx();
     active = true;
 
     try {
@@ -72,8 +74,10 @@ function stop() {
     } catch (error) {
         console.error('[TwitterLike] teardown had a problem', error);
     }
-    flushFeed().catch(error => console.error('[TwitterLike] final save failed', error));
+    const finalSave = flushFeed().catch(error => console.error('[TwitterLike] final save failed', error));
     unmountAll();
+    // The host may or may not await disable(), but nothing is left dangling either way.
+    return finalSave;
 }
 
 export function activate() {
@@ -85,7 +89,7 @@ export function enable() {
 }
 
 export function disable() {
-    stop();
+    return stop();
 }
 
 start();

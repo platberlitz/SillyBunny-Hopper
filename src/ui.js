@@ -32,10 +32,37 @@ const state = {
     status: '',
     busy: false,
     draft: { text: '', image: '', poll: null },
+    // Persona the current draft belongs to; a draft left by another persona is discarded.
+    draftOwner: null,
 };
 
 const owned = new Set();
 let toggleObserver = null;
+
+// One popup at a time; async work belongs to a session and dies with it.
+let openTask = null;
+let sessionEpoch = 0;
+let workController = null;
+
+function freshSignal() {
+    // Aborting also invalidates every run holding the previous signal.
+    workController?.abort();
+    workController = new AbortController();
+    return { epoch: ++sessionEpoch, signal: workController.signal };
+}
+
+function invalidateWork() {
+    sessionEpoch += 1;
+    workController?.abort();
+    workController = null;
+}
+
+function isLive(epoch) {
+    return epoch === sessionEpoch && state.body !== null;
+}
+
+// Monotonic counter of refresh runs; only the newest may touch shared busy/status state.
+let refreshRuns = 0;
 
 const dateFormat = new Intl.DateTimeFormat(undefined, {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -84,6 +111,9 @@ function toast(message, type = 'info') {
     globalThis.toastr?.[type]?.(message, 'TwitterLike');
 }
 
+// Bumped on every image pick; a finished upload with a stale token is discarded.
+let uploadToken = 0;
+
 // --- feed helpers ---------------------------------------------------------
 
 function accountFor(key) {
@@ -102,33 +132,51 @@ function handleFor(key, snapshot) {
     return accountFor(key)?.handle ?? snapshot?.handle ?? 'unknown';
 }
 
+// One pass over the interactions per render, instead of a full scan inside every
+// comparator and every post node. Rebuilt at the top of render().
+const EMPTY_STATS = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0 };
+let byPost = new Map();
+
+function buildInteractionMap() {
+    const map = new Map();
+    const me = personaAccount();
+    for (const item of state.feed.interactions) {
+        let entry = map.get(item.postId);
+        if (!entry) {
+            entry = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0 };
+            map.set(item.postId, entry);
+        }
+        entry.items.push(item);
+        entry[item.type] += 1;
+        if (me && item.actorKey === me.key) {
+            entry.mine.set(item.type, item);
+        }
+        if (item.type === 'reply' && item.createdAt > entry.latestReplyAt) {
+            entry.latestReplyAt = item.createdAt;
+        }
+    }
+    return map;
+}
+
+function statsFor(postId) {
+    return byPost.get(postId) ?? EMPTY_STATS;
+}
+
 function interactionsFor(postId) {
-    return state.feed.interactions.filter(item => item.postId === postId);
+    return statsFor(postId).items;
 }
 
 function countOf(postId, type) {
-    return interactionsFor(postId).filter(item => item.type === type).length;
+    return statsFor(postId)[type] ?? 0;
 }
 
 function myInteraction(postId, type) {
-    const me = personaAccount();
-    if (!me) {
-        return null;
-    }
-    return state.feed.interactions.find(
-        item => item.postId === postId && item.type === type && item.actorKey === me.key,
-    ) ?? null;
+    return statsFor(postId).mine.get(type) ?? null;
 }
 
-/** A post bumps when someone replies to it, so a live conversation stays near the top. */
+/** Only replies bump a conversation; likes and votes must not reorder the timeline. */
 function activityAt(post) {
-    let latest = post.createdAt;
-    for (const item of state.feed.interactions) {
-        if (item.postId === post.id && item.createdAt > latest) {
-            latest = item.createdAt;
-        }
-    }
-    return latest;
+    return Math.max(post.createdAt, statsFor(post.id).latestReplyAt);
 }
 
 function followingKeys() {
@@ -244,7 +292,7 @@ function actionsNode(post) {
     const me = personaAccount();
     const liked = Boolean(myInteraction(post.id, 'like'));
     const reposted = Boolean(myInteraction(post.id, 'repost'));
-    const replies = interactionsFor(post.id).filter(item => item.type === 'reply').length;
+    const replies = countOf(post.id, 'reply');
 
     const action = (iconName, count, active, onClick, label) => el('button', {
         className: `sbtw-action${active ? ' sbtw-action-on' : ''}`,
@@ -256,7 +304,12 @@ function actionsNode(post) {
         action('fa-heart', countOf(post.id, 'like'), liked, () => toggle(post, 'like'), liked ? 'Unlike' : 'Like'),
         action('fa-retweet', countOf(post.id, 'repost'), reposted, () => toggle(post, 'repost'), reposted ? 'Undo repost' : 'Repost'),
         action('fa-comment', replies, state.replyingTo === post.id, () => {
-            state.replyingTo = state.replyingTo === post.id ? null : post.id;
+            const opening = state.replyingTo !== post.id;
+            state.replyingTo = opening ? post.id : null;
+            pendingReplyFocus = opening ? post.id : null;
+            if (!opening) {
+                replyDrafts.delete(post.id);
+            }
             render();
         }, 'Reply'),
     ]);
@@ -331,12 +384,27 @@ function postNode(post) {
     ]);
 }
 
+const replyDrafts = new Map();
+let pendingReplyFocus = null;
+
 function replyComposer(post) {
     const me = personaAccount();
     const field = el('textarea', {
         className: 'sbtw-input',
-        attrs: { rows: '2', maxlength: String(REPLY_MAX_CHARS), placeholder: `Reply as ${me?.name ?? 'you'}...` },
+        attrs: {
+            rows: '2',
+            maxlength: String(REPLY_MAX_CHARS),
+            placeholder: `Reply as ${me?.name ?? 'you'}...`,
+            'aria-label': `Reply as ${me?.name ?? 'you'}`,
+        },
     });
+    // The draft survives re-renders; focus is only claimed when the composer opens.
+    field.value = replyDrafts.get(post.id) ?? '';
+    field.addEventListener('input', () => { replyDrafts.set(post.id, field.value); });
+    if (pendingReplyFocus === post.id) {
+        pendingReplyFocus = null;
+        queueMicrotask(() => field.focus());
+    }
     const send = button('Reply', 'sbtw-btn sbtw-btn-primary', () => {
         const text = field.value.trim();
         if (!text) {
@@ -344,7 +412,6 @@ function replyComposer(post) {
         }
         addReply(post, text);
     });
-    queueMicrotask(() => field.focus());
     return el('div', { className: 'sbtw-reply-composer' }, [field, el('div', { className: 'sbtw-composer-bar' }, [send])]);
 }
 
@@ -356,7 +423,7 @@ function composer() {
 
     const field = el('textarea', {
         className: 'sbtw-input sbtw-composer-input',
-        attrs: { rows: '3', maxlength: String(POST_MAX_CHARS), placeholder: "What's happening?" },
+        attrs: { rows: '3', maxlength: String(POST_MAX_CHARS), placeholder: "What's happening?", 'aria-label': "What's happening?" },
     });
     field.value = state.draft.text;
     field.addEventListener('input', () => { state.draft.text = field.value; });
@@ -390,13 +457,22 @@ function composer() {
     const picker = el('input', { attrs: { type: 'file', accept: 'image/*', hidden: 'hidden' } });
     picker.addEventListener('change', async () => {
         const file = picker.files?.[0];
+        picker.value = ''; // cleared immediately so the same file can be picked again
         if (!file) {
             return;
         }
+        // Late uploads must not attach to a newer pick or to a post published since.
+        const mine = ++uploadToken;
+        const targetDraft = state.draft;
         try {
-            state.draft.image = await api.uploadImage(file);
+            const url = await api.uploadImage(file);
+            if (mine !== uploadToken || state.draft !== targetDraft) {
+                return;
+            }
+            targetDraft.image = url;
             render();
         } catch (error) {
+            console.error('[TwitterLike] image upload failed', error);
             toast(error.message, 'error');
         }
     });
@@ -420,7 +496,9 @@ function composer() {
 
 function timelineView() {
     const posts = visiblePosts();
-    const tabs = el('div', { className: 'sbtw-tabs', attrs: { role: 'tablist' } }, [
+    // Plain toggle buttons: a real tab pattern needs arrow-key roving focus and
+    // tabpanels we do not have, and mislabelled tabs are worse than honest buttons.
+    const tabs = el('div', { className: 'sbtw-tabs' }, [
         tabButton('Main', 'main'),
         tabButton('Following', 'following'),
     ]);
@@ -444,7 +522,7 @@ function tabButton(label, value) {
     return el('button', {
         className: `sbtw-tab${state.tab === value ? ' sbtw-tab-on' : ''}`,
         text: label,
-        attrs: { type: 'button', role: 'tab', 'aria-selected': String(state.tab === value) },
+        attrs: { type: 'button', 'aria-pressed': String(state.tab === value) },
         on: { click: () => { state.tab = value; render(); } },
     });
 }
@@ -453,10 +531,15 @@ function refreshBar() {
     return el('div', { className: 'sbtw-refresh-bar' }, [
         el('button', {
             className: 'sbtw-btn sbtw-btn-primary sbtw-refresh',
-            attrs: { type: 'button', disabled: state.busy },
+            attrs: { type: 'button', disabled: state.busy ? 'disabled' : null },
             on: { click: () => refresh() },
         }, [icon(state.busy ? 'fa-spinner fa-spin' : 'fa-rotate'), el('span', { text: state.busy ? 'Working...' : 'Refresh' })]),
-        el('span', { className: 'sbtw-status', text: state.status }),
+        // Live region: progress updates are announced without stealing focus.
+        el('span', {
+            className: 'sbtw-status',
+            text: state.status,
+            attrs: { role: 'status', 'aria-live': 'polite' },
+        }),
     ]);
 }
 
@@ -512,15 +595,32 @@ function notificationsView() {
         return el('div', { className: 'sbtw-empty', text: 'Set a persona to get notifications.' });
     }
     const myPostIds = new Set(state.feed.posts.filter(post => post.authorKey === me.key).map(post => post.id));
+    // Replies to MY comments on other people's posts are notifications too.
+    const myReplyIds = new Set(
+        state.feed.interactions
+            .filter(item => item.type === 'reply' && item.actorKey === me.key && myPostIds.has(item.postId))
+            .map(item => item.id),
+    );
     const rows = state.feed.interactions
-        .filter(item => myPostIds.has(item.postId) && item.actorKey !== me.key)
-        .sort((a, b) => b.createdAt - a.createdAt);
+        .filter(item => item.actorKey !== me.key
+            && (myPostIds.has(item.postId) || (item.parentInteractionId && myReplyIds.has(item.parentInteractionId))))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 50);
 
     const verb = { like: 'liked your post', repost: 'reposted you', reply: 'replied to you', vote: 'voted in your poll' };
     const list = rows.map(item => el('button', {
         className: 'sbtw-notification',
         attrs: { type: 'button' },
-        on: { click: () => { state.view = 'timeline'; state.replyingTo = item.postId; render(); scrollToPost(item.postId); } },
+        on: {
+            click: () => {
+                state.view = 'timeline';
+                // Only a reply gives you something to answer; likes just take you to the post.
+                state.replyingTo = item.type === 'reply' ? item.postId : null;
+                pendingReplyFocus = null;
+                render();
+                scrollToPost(item.postId);
+            },
+        },
     }, [
         avatarNode(accountFor(item.actorKey), 'sm'),
         el('div', {}, [
@@ -528,7 +628,12 @@ function notificationsView() {
                 el('span', { className: 'sbtw-name', text: nameFor(item.actorKey, item.actorSnapshot) }),
                 el('span', { className: 'sbtw-time', text: dateFormat.format(new Date(item.createdAt)) }),
             ]),
-            el('div', { className: 'sbtw-body', text: `${verb[item.type] ?? 'reacted'}${item.content ? `: ${item.content}` : ''}` }),
+            el('div', {
+                className: 'sbtw-body',
+                text: `${item.parentInteractionId && !myPostIds.has(item.postId)
+                    ? 'replied to your comment'
+                    : verb[item.type] ?? 'reacted'}${item.content ? `: ${item.content}` : ''}`,
+            }),
         ]),
     ]));
 
@@ -580,23 +685,16 @@ function settingsView() {
         })),
     ]);
 
-    const invites = el('div', { className: 'sbtw-invites' }, characters.map(character => {
-        const invited = settings.invited.includes(character.avatar);
-        return el('label', { className: 'sbtw-check sbtw-invite' }, [
-            (() => {
-                const box = el('input', { attrs: { type: 'checkbox' } });
-                box.checked = invited;
-                box.addEventListener('change', () => {
-                    const next = box.checked
-                        ? [...settings.invited, character.avatar]
-                        : settings.invited.filter(item => item !== character.avatar);
-                    save({ invited: next });
-                });
-                return box;
-            })(),
-            el('span', { text: character.name }),
-        ]);
-    }));
+    const invites = el('div', { className: 'sbtw-invites' }, characters.map(character => checkbox(
+        character.name || character.avatar,
+        settings.invited.includes(character.avatar),
+        (checked) => {
+            const next = checked
+                ? [...settings.invited, character.avatar]
+                : settings.invited.filter(item => item !== character.avatar);
+            save({ invited: next });
+        },
+    )));
 
     const activeMode = el('select', {
         className: 'sbtw-input',
@@ -608,7 +706,12 @@ function settingsView() {
 
     return el('div', { className: 'sbtw-settings' }, [
         el('h3', { text: 'Who posts' }),
-        field('Characters', invites, 'Only invited characters take part in a refresh.'),
+        // A group of checkboxes cannot live inside a single <label>; each has its own.
+        el('div', { className: 'sbtw-field' }, [
+            el('span', { className: 'sbtw-field-label', text: 'Characters' }),
+            invites,
+            el('span', { className: 'sbtw-hint', text: 'Only invited characters take part in a refresh.' }),
+        ]),
         checkbox('Include the ambient strangers', settings.ambient, value => save({ ambient: value })),
         field('Accounts per refresh', activeMode),
         settings.active.mode === 'range'
@@ -671,7 +774,7 @@ function settingsView() {
             'Zero turns it off. Nothing happens while SillyBunny is closed - there is no server side to this.'),
 
         el('h3', { text: 'Reset' }),
-        el('p', { className: 'sbtw-hint', text: 'Clears posts, replies, likes and reposts. Profiles, follows and settings stay.' }),
+        el('p', { className: 'sbtw-hint', text: 'Clears posts, replies, likes, reposts and votes. Profiles, follows and settings stay.' }),
         button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetTimeline()),
     ]);
 }
@@ -681,7 +784,8 @@ function settingsView() {
 function navButton(label, iconName, view) {
     return el('button', {
         className: `sbtw-nav-item${state.view === view ? ' sbtw-nav-on' : ''}`,
-        attrs: { type: 'button', 'aria-current': state.view === view ? 'page' : null },
+        // The label span is hidden below 1100px, so the name must live on the button.
+        attrs: { type: 'button', 'aria-label': label, 'aria-current': state.view === view ? 'page' : null },
         on: { click: () => { state.view = view; if (view !== 'profile') { state.profileKey = null; } render(); } },
     }, [icon(iconName), el('span', { text: label })]);
 }
@@ -715,6 +819,7 @@ function render() {
     if (!state.body) {
         return;
     }
+    byPost = buildInteractionMap();
     const views = {
         timeline: timelineView,
         profile: profileView,
@@ -722,17 +827,26 @@ function render() {
         settings: settingsView,
     };
     const main = el('main', { className: 'sbtw-main' }, [(views[state.view] ?? timelineView)()]);
-    const nav = el('nav', { className: 'sbtw-nav' }, [
+    const me = personaAccount();
+    const nav = el('nav', { className: 'sbtw-nav', attrs: { 'aria-label': 'Timeline sections' } }, [
         navButton('Home', 'fa-house', 'timeline'),
         navButton('Notifications', 'fa-bell', 'notifications'),
         el('button', {
             className: `sbtw-nav-item${state.view === 'profile' ? ' sbtw-nav-on' : ''}`,
-            attrs: { type: 'button' },
-            on: { click: () => showProfile(personaAccount()?.key ?? null) },
+            attrs: {
+                type: 'button',
+                'aria-label': 'Profile',
+                'aria-current': state.view === 'profile' ? 'page' : null,
+                disabled: me ? null : 'disabled',
+                title: me ? 'Profile' : 'Set a persona first',
+            },
+            on: { click: () => showProfile(me?.key ?? null) },
         }, [icon('fa-user'), el('span', { text: 'Profile' })]),
         navButton('Settings', 'fa-gear', 'settings'),
     ]);
-    state.body.replaceChildren(nav, main, state.view === 'timeline' ? whoToFollow() : null);
+    // A rail that does not exist must not be appended - DOM APIs would stringify the null.
+    const rail = state.view === 'timeline' ? whoToFollow() : null;
+    state.body.replaceChildren(...(rail ? [nav, main, rail] : [nav, main]));
 }
 
 function scrollToPost(postId) {
@@ -753,9 +867,16 @@ function publish(text) {
     if (!me || (!body && !state.draft.image)) {
         return;
     }
-    const options = (state.draft.poll ?? []).map(option => option.trim()).filter(Boolean);
+    // A draft left over from a different persona (or before a reopen) is not mine to post.
+    if (state.draftOwner !== me.key) {
+        state.draft = { text: '', image: '', poll: null };
+        state.draftOwner = me.key;
+    }
+    const options = api.getSettings().polls
+        ? (state.draft.poll ?? []).map(option => option.trim()).filter(Boolean)
+        : [];
     const unique = [...new Set(options)];
-    if (state.draft.poll && unique.length < 2) {
+    if (options.length && unique.length < 2) {
         toast('A poll needs at least two different options.', 'warning');
         return;
     }
@@ -795,6 +916,8 @@ function addReply(post, text) {
         actorSnapshot: snapshotOf(me),
     });
     state.replyingTo = null;
+    replyDrafts.delete(post.id);
+    pendingReplyFocus = null;
     persist();
     render();
 }
@@ -894,19 +1017,44 @@ async function openImage(url) {
     await new context.Popup(image, context.POPUP_TYPE.DISPLAY, '', { wide: true, large: true }).show();
 }
 
+/**
+ * A refresh belongs to its session: closing the popup, resetting the timeline or a newer
+ * run aborts it through its signal, and every await is followed by a staleness check so
+ * stale work can never render, toast, or clear a live run's state.
+ */
 async function refresh() {
     if (state.busy) {
         return;
     }
     state.busy = true;
     state.status = 'Thinking...';
+    const { epoch, signal } = freshSignal();
+    let runs = ++refreshRuns;
     render();
     try {
         const result = await api.runRefresh({
             feed: state.feed,
-            onProgress: (message) => { state.status = message; render(); },
+            signal,
+            onProgress: (message) => {
+                if (!isLive(epoch)) {
+                    return;
+                }
+                // Progress patches only the status line: a full rerender here would
+                // destroy scroll position, focus, and drafts on every image drawn.
+                state.status = message;
+                const statusNode = state.body?.querySelector('.sbtw-status');
+                if (statusNode) {
+                    statusNode.textContent = message;
+                }
+            },
         });
+        if (!isLive(epoch)) {
+            return;
+        }
         await refreshAccounts();
+        if (!isLive(epoch)) {
+            return;
+        }
         state.status = '';
         if (result.warnings.length) {
             console.warn('[TwitterLike] refresh warnings', result.warnings);
@@ -916,11 +1064,20 @@ async function refresh() {
             toast('The model returned nothing usable this time.', 'warning');
         }
     } catch (error) {
+        if (!isLive(epoch)) {
+            console.warn('[TwitterLike] refresh cancelled', error);
+            return;
+        }
         state.status = '';
-        toast(error.message, 'error');
+        // Provider errors are remote text; show a fixed message and keep the raw one local.
+        console.error('[TwitterLike] refresh failed', error);
+        toast('The refresh failed - check your connection settings, then try again.', 'error');
     } finally {
-        state.busy = false;
-        render();
+        if (runs === refreshRuns) {
+            state.busy = false;
+            state.status = '';
+            render();
+        }
     }
 }
 
@@ -928,14 +1085,21 @@ async function resetTimeline() {
     const context = globalThis.SillyTavern.getContext();
     const confirmed = await context.Popup.show.confirm(
         'Reset the timeline?',
-        'Posts, replies, likes and reposts go. Profiles, follows and settings stay.',
+        'Posts, replies, likes, reposts and votes go. Profiles, follows and settings stay.',
     );
     if (!confirmed) {
         return;
     }
+    // Kill any generation still running against this timeline before wiping it.
+    invalidateWork();
     state.feed.posts = [];
     state.feed.interactions = [];
-    await api.writeFeed(state.feed);
+    try {
+        await api.writeFeed(state.feed);
+    } catch (error) {
+        console.error('[TwitterLike] resetting the saved feed failed', error);
+        toast('The timeline is cleared here, but the saved file could not be rewritten.', 'warning');
+    }
     state.view = 'timeline';
     render();
 }
@@ -976,19 +1140,79 @@ function applyTopbarOffset() {
     }
 }
 
-export async function openFeed() {
+function closePopup(popup) {
+    if (typeof popup.completeCancelled === 'function') {
+        popup.completeCancelled();
+    } else {
+        popup.hide?.();
+    }
+}
+
+/** Waits out the closing session so a retry starts against clean state. */
+async function reopenFeed() {
+    while (openTask) {
+        try {
+            await openTask;
+        } catch {
+            // The failed attempt already reported itself.
+        }
+    }
+    openFeed();
+}
+
+/**
+ * One feed at a time: rapid double-clicks share the same promise instead of building two
+ * popups over one set of globals.
+ */
+export function openFeed() {
+    if (openTask) {
+        return openTask;
+    }
+    openTask = startFeed().finally(() => { openTask = null; });
+    return openTask;
+}
+
+async function startFeed() {
     const context = globalThis.SillyTavern.getContext();
-    state.feed = await api.loadFeed();
-    await refreshAccounts();
+    invalidateWork();
+    let failure = null;
+    try {
+        state.feed = await api.loadFeed();
+        await refreshAccounts();
+    } catch (error) {
+        state.feed = null;
+        failure = error;
+    }
     state.view = 'timeline';
     state.replyingTo = null;
+    state.draft = { text: '', image: '', poll: null };
+    state.draftOwner = null;
+    replyDrafts.clear();
+    pendingReplyFocus = null;
 
-    state.body = el('div', { className: 'sbtw-shell' });
-    render();
+    const body = el('div', { className: 'sbtw-shell', attrs: { role: 'region', 'aria-label': 'TwitterLike' } });
+    if (failure) {
+        // Fail closed with a way out - never an editable-looking empty timeline.
+        console.error('[TwitterLike] the saved timeline could not be opened', failure);
+        body.append(
+            el('h3', { text: 'The saved timeline could not be read' }),
+            el('p', { className: 'sbtw-hint', text: String(failure?.message ?? failure) }),
+            el('div', { className: 'sbtw-composer-bar' }, [
+                button('Try again', 'sbtw-btn sbtw-btn-primary', () => { closePopup(popup); reopenFeed(); }),
+                button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetFailedTimeline(popup)),
+            ]),
+        );
+    } else {
+        state.body = body;
+        render();
+        if (needsCatchUp(api.getSettings())) {
+            refresh();
+        }
+    }
 
     // Full screen below the top bar. The host has no fullscreen popup option, so the size
     // comes from our own class on the dialog rather than from wide/large.
-    const popup = new context.Popup(state.body, context.POPUP_TYPE.DISPLAY, '', {
+    const popup = new context.Popup(body, context.POPUP_TYPE.DISPLAY, '', {
         animation: 'fast',
     });
     popup.dlg?.classList.add('sbtw-popup');
@@ -996,19 +1220,38 @@ export async function openFeed() {
     applyTopbarOffset();
     window.addEventListener('resize', applyTopbarOffset);
 
-    if (needsCatchUp(api.getSettings())) {
-        refresh();
-    }
-
     try {
         await popup.show();
     } finally {
         window.removeEventListener('resize', applyTopbarOffset);
-        state.popup = null;
-        state.body = null;
-        api.updateSettings({ lastSeenAt: Date.now() });
+        invalidateWork();
+        if (state.popup === popup) {
+            state.popup = null;
+            state.body = null;
+            byPost = new Map();
+        }
         await api.flushFeed().catch(error => console.error('[TwitterLike] final save failed', error));
     }
+}
+
+async function resetFailedTimeline(popup) {
+    const context = globalThis.SillyTavern.getContext();
+    const confirmed = await context.Popup.show.confirm(
+        'Start a new timeline?',
+        'The saved file will be overwritten with an empty timeline. This cannot be undone.',
+    );
+    if (!confirmed) {
+        return;
+    }
+    try {
+        await api.writeFeed({ version: 1, posts: [], interactions: [] });
+    } catch (error) {
+        console.error('[TwitterLike] resetting the saved feed failed', error);
+        toast('The saved file could not be cleared - try again.', 'error');
+        return;
+    }
+    closePopup(popup);
+    reopenFeed();
 }
 
 // --- mounting -------------------------------------------------------------
@@ -1101,15 +1344,22 @@ function mountWandItem() {
     // Wand entries must be divs: the host styles #extensionsMenu > div.
     const node = el('div', {
         className: 'list-group-item flex-container flexGap5 interactable',
-        attrs: { id: WAND_ID, tabindex: '0' },
-        on: { click: () => openFeed() },
+        attrs: { id: WAND_ID, tabindex: '0', role: 'button', 'aria-label': 'Open TwitterLike' },
+        on: {
+            click: () => openFeed(),
+            keydown: (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openFeed();
+                }
+            },
+        },
     }, [
         el('div', { className: 'fa-solid fa-hashtag extensionsMenuExtensionButton' }),
         el('span', { text: 'TwitterLike' }),
     ]);
     menu.append(node);
     owned.add(node);
-    setTimeout(() => node.setAttribute('role', 'button'), 0);
 }
 
 function mountDrawer() {
@@ -1167,9 +1417,11 @@ export function unmountAll() {
         node.remove();
     }
     owned.clear();
+    invalidateWork();
     state.popup?.completeCancelled?.();
     state.popup = null;
     state.body = null;
     state.feed = null;
     state.accounts = [];
+    byPost = new Map();
 }

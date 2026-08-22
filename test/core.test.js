@@ -11,7 +11,9 @@ import {
     buildRefreshMessages,
     deriveAccounts,
     digestLines,
+    formatTimeline,
     handleFromName,
+    inertText,
     materializeRefresh,
     needsCatchUp,
     normalizeSettings,
@@ -135,6 +137,33 @@ test('a stored profile overrides the derived handle and name', () => {
     assert.equal(accounts[0].hasProfile, true);
 });
 
+test('stored handles are canonicalised through the same allocator as generated ones', () => {
+    const accounts = deriveAccounts({
+        characters: [
+            { avatar: 'a.png', name: 'Ada' },
+            { avatar: 'b.png', name: 'Bo' },
+        ],
+        invited: ['a.png', 'b.png'],
+        profiles: {
+            'character:a.png': { handle: 'Echo' },
+            'character:b.png': { handle: 'echo' },
+        },
+    });
+    const [first, second] = accounts;
+    // "Echo" and "echo" are the same handle in a mention; they must not collide silently.
+    assert.notEqual(first.handle.toLowerCase(), second.handle.toLowerCase());
+    assert.ok(accounts.every(account => /^[a-z0-9_]{1,20}$/.test(account.handle)));
+});
+
+test('an invalid stored handle cannot bypass sanitisation', () => {
+    const accounts = deriveAccounts({
+        characters: [{ avatar: 'a.png', name: 'Ada' }],
+        invited: ['a.png'],
+        profiles: { 'character:a.png': { handle: '!!! spaces !!!' } },
+    });
+    assert.match(accounts[0].handle, /^[a-z0-9_]{1,20}$/);
+});
+
 // --- participants ---------------------------------------------------------
 
 test('selectParticipants respects an exact count and never picks the persona', () => {
@@ -164,6 +193,17 @@ test('ambient accounts stay rare - they need the 25% roll', () => {
 
 test('selectParticipants returns nothing when there is nobody to pick', () => {
     assert.deepEqual(selectParticipants([], settings(), { random: () => 0 }), []);
+});
+
+test('an ambient-only install still gets a cast in every mode', () => {
+    const accounts = deriveAccounts({ characters: [], invited: [], ambient: true });
+    assert.equal(accounts.length, AMBIENT_ACCOUNTS.length);
+    const range = selectParticipants(accounts, settings(), { random: () => 0 });
+    const exact = selectParticipants(accounts, settings({ active: { mode: 'exact', count: 2 } }), { random: () => 0.9 });
+    const all = selectParticipants(accounts, settings({ active: { mode: 'all' } }), { random: () => 0 });
+    assert.ok(range.length >= 1 && range.length <= AMBIENT_ACCOUNTS.length);
+    assert.equal(exact.length, 2);
+    assert.equal(all.length, AMBIENT_ACCOUNTS.length);
 });
 
 // --- prompt ---------------------------------------------------------------
@@ -263,8 +303,46 @@ function materialize(parsed, overrides = {}) {
         interactions: overrides.interactions ?? [],
         newId,
         now: NOW,
+        ...(overrides.extra ?? {}),
     });
 }
+
+test('activity by an inactive invited account is dropped and reported', () => {
+    const adaKey = accountKey('character', 'ada.png');
+    const result = materialize(
+        {
+            posts: [{ authorHandle: 'bo', content: 'sneaking in' }],
+            interactions: [{ actorHandle: 'bo', type: 'like', targetPostId: 'x' }],
+            follows: [{ actorHandle: 'bo', targetHandle: 'ada' }],
+        },
+        { extra: { allowedActorKeys: [adaKey] } },
+    );
+    assert.equal(result.posts.length, 0);
+    assert.equal(result.interactions.length, 0);
+    assert.equal(result.follows.length, 0);
+    assert.ok(result.warnings.some(w => /not active this refresh/.test(w)));
+});
+
+test('a reply parent must belong to the post being replied to', () => {
+    const existingPosts = [
+        { id: 'p1', authorKey: 'character:ada.png', body: 'one', createdAt: NOW },
+        { id: 'p2', authorKey: 'character:bo.png', body: 'two', createdAt: NOW },
+    ];
+    const existingInteractions = [
+        { id: 'r1', postId: 'p1', type: 'reply', actorKey: 'character:ada.png', content: 'parent', createdAt: NOW },
+    ];
+    const crossPost = materialize(
+        { posts: [], interactions: [{ actorHandle: 'bo', type: 'reply', targetPostId: 'p2', content: 'child', parentInteractionId: 'r1' }], follows: [] },
+        { posts: existingPosts, interactions: existingInteractions },
+    );
+    assert.equal(crossPost.interactions[0].parentInteractionId, null);
+
+    const samePost = materialize(
+        { posts: [], interactions: [{ actorHandle: 'bo', type: 'reply', targetPostId: 'p1', content: 'child', parentInteractionId: 'r1' }], follows: [] },
+        { posts: existingPosts, interactions: existingInteractions },
+    );
+    assert.equal(samePost.interactions[0].parentInteractionId, 'r1');
+});
 
 test('a tempId lets one response reply to its own new post', () => {
     const result = materialize({
@@ -437,6 +515,83 @@ test('follows resolve to account keys and skip self-follows', () => {
         ],
     });
     assert.deepEqual(result.follows, [{ actorKey: accountKey('character', 'ada.png'), targetKey: accountKey('character', 'bo.png') }]);
+});
+
+test('a malformed pollOptionIndex is never coerced into a vote for option zero', () => {
+    const parsed = {
+        posts: [{ tempId: 't1', authorHandle: 'ada', content: 'pick', poll: { question: 'q', options: ['a', 'b'] } }],
+        interactions: [],
+        follows: [],
+    };
+    for (const junk of [null, '', false, '1']) {
+        const result = materialize({
+            ...parsed,
+            interactions: [{ actorHandle: 'bo', type: 'vote', targetTempId: 't1', pollOptionIndex: junk }],
+        });
+        assert.equal(result.interactions.length, 0, `pollOptionIndex ${JSON.stringify(junk)} should be rejected`);
+    }
+    const real = materialize({
+        ...parsed,
+        interactions: [{ actorHandle: 'bo', type: 'vote', targetTempId: 't1', pollOptionIndex: 0 }],
+    });
+    assert.equal(real.interactions.length, 1);
+    assert.equal(real.interactions[0].pollOptionIndex, 0);
+});
+
+test('a duplicate tempId cannot retarget interactions at a later post', () => {
+    const result = materialize({
+        posts: [
+            { tempId: 't1', authorHandle: 'ada', content: 'first' },
+            { tempId: 't1', authorHandle: 'bo', content: 'second' },
+        ],
+        interactions: [{ actorHandle: 'bo', type: 'like', targetTempId: 't1' }],
+        follows: [],
+    });
+    assert.equal(result.posts.length, 2);
+    assert.equal(result.interactions.length, 1);
+    // Bo likes Ada's post (the FIRST t1). If the duplicate had retargeted t1 at Bo's own
+    // post, the self-like guard would have silently dropped this interaction instead.
+    assert.equal(result.interactions[0].postId, result.posts[0].id);
+    assert.ok(result.warnings.some(w => /duplicate tempId/.test(w)));
+});
+
+test('duplicate follow pairs do not eat the follow cap', () => {
+    const dupes = Array.from({ length: 12 }, () => ({ actorHandle: 'ada', targetHandle: 'bo' }));
+    const result = materialize({
+        posts: [],
+        interactions: [],
+        follows: [...dupes, { actorHandle: 'ada', targetHandle: 'me' }],
+    });
+    assert.deepEqual(result.follows, [
+        { actorKey: accountKey('character', 'ada.png'), targetKey: accountKey('character', 'bo.png') },
+        { actorKey: accountKey('character', 'ada.png'), targetKey: accountKey('persona', 'me.png') },
+    ]);
+});
+
+// --- untrusted text -------------------------------------------------------
+
+test('{{macros}} in stored text cannot survive into prompts', () => {
+    const accounts = makeAccounts();
+    const posts = [{ id: 'p1', authorKey: 'character:ada.png', body: 'call {{getvar::secret}} now', createdAt: NOW }];
+    const timeline = formatTimeline(posts, [], accounts, { now: NOW, windowHours: 48 });
+    assert.doesNotMatch(timeline, /\{\{getvar/);
+    const lines = digestLines(posts, [], accounts, {});
+    assert.ok(lines.every(line => !line.includes('{{getvar')));
+    assert.equal(inertText('{{x}}'), '{\u200b{x}}');
+});
+
+test('formatTimeline stays inside its character budget and keeps the newest posts', () => {
+    const accounts = makeAccounts();
+    const posts = Array.from({ length: 30 }, (_, i) => ({
+        id: `p${i}`,
+        authorKey: 'character:ada.png',
+        body: `${'x'.repeat(3900)} newest=${i === 0} oldest=${i === 29}`,
+        createdAt: NOW - i * 1000,
+    }));
+    const timeline = formatTimeline(posts, [], accounts, { now: NOW, windowHours: 48 });
+    assert.ok(timeline.length < 50_000, `timeline was ${timeline.length} chars`);
+    assert.match(timeline, /newest=true/);
+    assert.doesNotMatch(timeline, /oldest=true/);
 });
 
 // --- carryover ------------------------------------------------------------

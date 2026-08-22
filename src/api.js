@@ -33,29 +33,6 @@ const FEED_FILE = 'twitterlike-feed.json';
 const REFRESH_MAX_TOKENS = 4096;
 const PROFILE_MAX_TOKENS_BASE = 1024;
 
-const REQUIRED_FUNCTIONS = [
-    'getCharacters',
-    'getThumbnailUrl',
-    'getRequestHeaders',
-    'saveSettingsDebounced',
-    'setExtensionPrompt',
-    'generateRaw',
-];
-
-export function assertCapabilities() {
-    const context = ctx();
-    const missing = REQUIRED_FUNCTIONS.filter(name => typeof context?.[name] !== 'function');
-    for (const name of ['APP_READY', 'CHAT_CHANGED']) {
-        if (!context?.eventTypes?.[name]) {
-            missing.push(`eventTypes.${name}`);
-        }
-    }
-    if (missing.length) {
-        throw new Error(`Unsupported SillyBunny context; missing ${missing.join(', ')}`);
-    }
-    return context;
-}
-
 // --- settings -------------------------------------------------------------
 
 export function getSettings() {
@@ -130,38 +107,142 @@ export function avatarUrl(account) {
 // --- feed storage ---------------------------------------------------------
 
 const EMPTY_FEED = { version: 1, posts: [], interactions: [] };
+const INTERACTION_TYPES = new Set(['like', 'repost', 'reply', 'vote']);
 
-function normalizeFeed(raw) {
-    if (!raw || typeof raw !== 'object') {
-        return { ...EMPTY_FEED, posts: [], interactions: [] };
+const isObj = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const storedText = value => (typeof value === 'string' ? value : '');
+const storedTime = value => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+};
+
+function storedSnapshot(raw) {
+    if (!isObj(raw)) {
+        return null;
     }
     return {
-        version: 1,
-        posts: Array.isArray(raw.posts) ? raw.posts : [],
-        interactions: Array.isArray(raw.interactions) ? raw.interactions : [],
+        key: storedText(raw.key),
+        kind: storedText(raw.kind),
+        handle: storedText(raw.handle),
+        name: storedText(raw.name),
     };
+}
+
+function storedPost(raw) {
+    const id = storedText(raw?.id).trim();
+    const authorKey = storedText(raw?.authorKey).trim();
+    if (!id || !authorKey) {
+        return null;
+    }
+    const pollRaw = isObj(raw.poll) ? raw.poll : null;
+    const options = Array.isArray(pollRaw?.options)
+        ? pollRaw.options
+            .filter(option => option && typeof option.text === 'string' && option.text.trim())
+            .slice(0, 4)
+        : [];
+    return {
+        id,
+        authorKey,
+        body: storedText(raw.body),
+        createdAt: storedTime(raw.createdAt),
+        image: isObj(raw.image) && typeof raw.image.url === 'string'
+            ? { url: raw.image.url, prompt: storedText(raw.image.prompt) }
+            : null,
+        poll: pollRaw && typeof pollRaw.question === 'string' && options.length >= 2
+            ? {
+                question: pollRaw.question,
+                options: options.map((option, index) => ({
+                    id: storedText(option.id) || `option-${index}`,
+                    text: option.text,
+                })),
+            }
+            : null,
+        authorSnapshot: storedSnapshot(raw.authorSnapshot),
+    };
+}
+
+function storedInteraction(raw, validPostIds) {
+    const id = storedText(raw?.id).trim();
+    const postId = storedText(raw?.postId).trim();
+    const actorKey = storedText(raw?.actorKey).trim();
+    const type = storedText(raw?.type);
+    if (!id || !postId || !actorKey || !INTERACTION_TYPES.has(type)) {
+        return null;
+    }
+    // An interaction pointing at a post nobody stored can never render or resolve.
+    if (!validPostIds.has(postId)) {
+        return null;
+    }
+    return {
+        id,
+        postId,
+        type,
+        actorKey,
+        content: storedText(raw.content) || null,
+        parentInteractionId: storedText(raw.parentInteractionId) || null,
+        pollOptionIndex: Number.isInteger(raw?.pollOptionIndex) && raw.pollOptionIndex >= 0 ? raw.pollOptionIndex : null,
+        createdAt: storedTime(raw.createdAt),
+        actorSnapshot: storedSnapshot(raw.actorSnapshot),
+    };
+}
+
+/**
+ * Anything structurally usable becomes a well-formed feed; broken rows are dropped here
+ * rather than crashing a render later. A file that cannot be read at all never reaches
+ * this function - loadFeed fails closed instead.
+ */
+function normalizeFeed(raw) {
+    if (!isObj(raw) || !Array.isArray(raw.posts) || !Array.isArray(raw.interactions)) {
+        return { ...EMPTY_FEED };
+    }
+    const posts = [];
+    const postIds = new Set();
+    for (const item of raw.posts) {
+        const post = storedPost(item);
+        if (!post || postIds.has(post.id)) {
+            continue;
+        }
+        postIds.add(post.id);
+        posts.push(post);
+    }
+    const interactions = [];
+    const interactionIds = new Set();
+    for (const item of raw.interactions) {
+        const interaction = storedInteraction(item, postIds);
+        if (!interaction || interactionIds.has(interaction.id)) {
+            continue;
+        }
+        interactionIds.add(interaction.id);
+        interactions.push(interaction);
+    }
+    return { version: 1, posts, interactions };
 }
 
 /**
  * The feed lives in the user files directory, not in extension settings. Both
  * extensionSettings and accountStorage serialise into settings.json, and every write there
  * re-serialises the whole file and copies it into a 50-deep backup rotation.
+ *
+ * Fails closed: an unreadable configured feed throws instead of coming back as an empty
+ * timeline, because a writable empty feed would let the next save erase real history.
  */
 export async function loadFeed() {
-    const settings = getSettings();
-    const path = settings.shards[0];
+    const path = getSettings().shards[0];
     if (!path) {
-        return normalizeFeed(null);
+        return { ...EMPTY_FEED };
     }
     try {
         const response = await fetch(`${path}?t=${Date.now()}`, { cache: 'no-store' });
         if (!response.ok) {
-            return normalizeFeed(null);
+            throw new Error(`HTTP ${response.status}`);
         }
-        return normalizeFeed(await response.json());
+        const raw = await response.json();
+        if (!isObj(raw) || !Array.isArray(raw.posts) || !Array.isArray(raw.interactions)) {
+            throw new Error('the file does not contain a timeline');
+        }
+        return normalizeFeed(raw);
     } catch (error) {
-        console.error('[TwitterLike] could not read the feed file', error);
-        return normalizeFeed(null);
+        throw new Error(`The saved timeline could not be read (${error.message}). Try again, or reset the timeline to start over.`);
     }
 }
 
@@ -193,9 +274,19 @@ export async function writeFeed(feed) {
     return path;
 }
 
+// The picker's accept="image/*" is advisory only; validate before buffering anything.
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
 /** Attaches a picture the user picked from their device to a post they are writing. */
 export async function uploadImage(file) {
     const context = ctx();
+    // SVG is refused on purpose: it can carry scripts and would be served from the host origin.
+    if (!file || typeof file.type !== 'string' || !file.type.startsWith('image/') || file.type === 'image/svg+xml') {
+        throw new Error('That file is not a supported image.');
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+        throw new Error('That image is too large - the limit is 10 MB.');
+    }
     const buffer = await file.arrayBuffer();
     let binary = '';
     for (const byte of new Uint8Array(buffer)) {
@@ -217,27 +308,44 @@ export async function uploadImage(file) {
 
 let pendingFeed = null;
 let saveTimer = 0;
+let saveChain = Promise.resolve();
 
-/** Liking three posts in a row should be one write, not three. */
-export function saveFeedDebounced(feed, delay = 1200) {
-    pendingFeed = feed;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-        const snapshot = pendingFeed;
-        pendingFeed = null;
-        if (snapshot) {
-            writeFeed(snapshot).catch(error => console.error('[TwitterLike] feed save failed', error));
-        }
-    }, delay);
+function snapshotFeed(feed) {
+    return { version: 1, posts: [...feed.posts], interactions: [...feed.interactions] };
 }
 
-export async function flushFeed() {
+/**
+ * One upload at a time, so an older write can never finish after a newer one. A failed
+ * upload keeps its snapshot queued (unless something newer arrived) so flushFeed can
+ * retry it - data is only dropped from the queue once it is durable.
+ */
+function enqueueSave() {
     clearTimeout(saveTimer);
     const snapshot = pendingFeed;
     pendingFeed = null;
-    if (snapshot) {
-        await writeFeed(snapshot);
+    if (!snapshot) {
+        return saveChain;
     }
+    const attempt = saveChain.then(() => writeFeed(snapshot));
+    saveChain = attempt.then(() => {}, error => {
+        console.error('[TwitterLike] feed save failed', error);
+        if (!pendingFeed) {
+            pendingFeed = snapshot;
+        }
+    });
+    return attempt;
+}
+
+/** Liking three posts in a row should be one write, not three. */
+export function saveFeedDebounced(feed, delay = 1200) {
+    pendingFeed = snapshotFeed(feed);
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { enqueueSave().catch(() => {}); }, delay);
+}
+
+/** Waits out any in-flight write, then writes whatever is still unsaved. */
+export async function flushFeed() {
+    return enqueueSave();
 }
 
 // --- generation -----------------------------------------------------------
@@ -302,16 +410,19 @@ async function generateProfilesFor(accounts, allAccounts, signal) {
     }
 }
 
-export async function generatePostImage(prompt) {
+export async function generatePostImage(prompt, signal) {
     const context = ctx();
     if (typeof context.executeSlashCommandsWithOptions !== 'function') {
         return '';
     }
     try {
-        // quiet=true returns the URL instead of posting the image into the open chat.
+        // The prompt is model output, so it is quoted and escaped: unquoted, its text could
+        // parse as named /imagine flags (quiet=false gallery=true ...) instead of the image
+        // description. quiet=true returns the URL instead of posting into the open chat.
+        const quoted = `"${String(prompt ?? '').replace(/[\\"]/g, '\\$&').replace(/\s+/g, ' ').trim()}"`;
         const result = await context.executeSlashCommandsWithOptions(
-            `/imagine quiet=true gallery=false ${prompt.replace(/\|/g, ' ')}`,
-            { handleExecutionErrors: true },
+            `/imagine quiet=true gallery=false ${quoted}`,
+            { handleExecutionErrors: true, signal },
         );
         return typeof result?.pipe === 'string' ? result.pipe : '';
     } catch (error) {
@@ -345,7 +456,8 @@ export async function runRefresh({ feed, signal, onProgress = () => {} } = {}) {
         onProgress('Writing profiles...');
         const profiles = await generateProfilesFor(needProfiles, accounts, signal);
         if (Object.keys(profiles).length) {
-            updateSettings({ profiles: { ...settings.profiles, ...profiles } });
+            // Fresh read: the user may have edited profiles while generation was running.
+            updateSettings({ profiles: { ...getSettings().profiles, ...profiles } });
         }
     }
 
@@ -389,6 +501,9 @@ export async function runRefresh({ feed, signal, onProgress = () => {} } = {}) {
 
     const result = materializeRefresh(parsed, {
         accounts: freshAccounts,
+        // The prompt asks for active accounts only; this enforces it locally, so a
+        // malformed batch cannot act through an invited-but-deactivated character.
+        allowedActorKeys: [...activeKeys],
         settings: current,
         posts: feed.posts,
         interactions: feed.interactions,
@@ -399,25 +514,39 @@ export async function runRefresh({ feed, signal, onProgress = () => {} } = {}) {
     if (current.images.enabled) {
         const withPrompts = result.posts.filter(post => post.image?.prompt);
         for (const [index, post] of withPrompts.entries()) {
+            signal?.throwIfAborted();
             onProgress(`Drawing image ${index + 1} of ${withPrompts.length}...`);
-            const url = await generatePostImage(post.image.prompt);
+            const url = await generatePostImage(post.image.prompt, signal);
             // A failed image publishes a clean text-only post rather than exposing the prompt.
             post.image = url ? { url, prompt: post.image.prompt } : null;
         }
     }
 
+    signal?.throwIfAborted();
+
+    // Persist the whole future state before touching anything the user can see: a failed
+    // save must not leave phantom posts that vanish on reload while lastRefreshAt claims
+    // the refresh happened.
+    const candidate = {
+        version: 1,
+        posts: [...feed.posts, ...result.posts],
+        interactions: [...feed.interactions, ...result.interactions],
+    };
+    await writeFeed(candidate);
+
+    feed.posts.push(...result.posts);
+    feed.interactions.push(...result.interactions);
+
     if (result.follows.length) {
-        const follows = { ...current.follows };
+        // Merge into the freshest settings so a follow made manually while the model was
+        // thinking is not overwritten by this refresh's snapshot.
+        const follows = { ...getSettings().follows };
         for (const { actorKey, targetKey } of result.follows) {
             follows[actorKey] = [...new Set([...(follows[actorKey] ?? []), targetKey])];
         }
         updateSettings({ follows });
     }
-
-    feed.posts.push(...result.posts);
-    feed.interactions.push(...result.interactions);
     updateSettings({ lastRefreshAt: Date.now() });
-    await writeFeed(feed);
 
     return result;
 }

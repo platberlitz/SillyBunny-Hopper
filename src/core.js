@@ -3,7 +3,6 @@
 export const SETTINGS_KEY = 'SillyBunny-TwitterLike';
 export const EXT_PROMPT_KEY = 'SillyBunny-TwitterLike';
 export const BODY_CLASS = 'sbtw';
-export const FEED_FILE_PREFIX = 'twitterlike-feed';
 
 export const KIND_PERSONA = 'persona';
 export const KIND_CHARACTER = 'character';
@@ -57,7 +56,6 @@ export const DEFAULTS = Object.freeze({
     carry: { enabled: false, hours: 48, items: 8, depth: 1 },
     catchUpHours: 0,
     lastRefreshAt: 0,
-    lastSeenAt: 0,
     profiles: {},
     follows: {},
     shards: [],
@@ -152,7 +150,6 @@ export function normalizeSettings(raw) {
         },
         catchUpHours: clampInt(source.catchUpHours, 0, 720, DEFAULTS.catchUpHours),
         lastRefreshAt: clampInt(source.lastRefreshAt, 0, Number.MAX_SAFE_INTEGER, 0),
-        lastSeenAt: clampInt(source.lastSeenAt, 0, Number.MAX_SAFE_INTEGER, 0),
         profiles,
         follows,
         shards: stringArray(source.shards),
@@ -185,13 +182,14 @@ export function handleFromName(name, taken = new Set()) {
     if (!taken.has(base)) {
         return base;
     }
+    // Suffix inside the 20-character mention grammar: a 20-char base + "2" would not match.
     for (let suffix = 2; suffix < 1000; suffix += 1) {
-        const candidate = `${base}${suffix}`;
+        const candidate = `${base.slice(0, 20 - String(suffix).length)}${suffix}`;
         if (!taken.has(candidate)) {
             return candidate;
         }
     }
-    return `${base}_x`;
+    return `${base.slice(0, 18)}_x`;
 }
 
 /**
@@ -205,7 +203,9 @@ export function deriveAccounts({ characters = [], invited = [], persona = null, 
 
     const push = (draft) => {
         const stored = profiles[draft.key] ?? {};
-        const handle = (stored.handle || '').trim() || handleFromName(draft.name, taken);
+        // Stored handles run through the same allocator as generated ones: "Echo" and a
+        // later stored "echo" cannot collide, and an invalid handle cannot bypass checks.
+        const handle = handleFromName((stored.handle || '').trim() || draft.name, taken);
         taken.add(handle);
         accounts.push({
             key: draft.key,
@@ -321,6 +321,15 @@ export function selectParticipants(accounts, settings, { posts = [], interaction
     }
     wanted = Math.max(1, Math.min(wanted, characters.length + ambient.length));
 
+    // An ambient-only install has no characters to rank - the strangers ARE the cast.
+    if (!characters.length) {
+        if (mode === 'all') {
+            return [...ambient];
+        }
+        const shuffled = [...ambient].sort(() => random() - 0.5);
+        return shuffled.slice(0, Math.min(wanted, ambient.length));
+    }
+
     const ranked = characters
         .map(account => ({ account, seen: lastActivityAt(account.key, posts, interactions), jitter: random() }))
         .sort((a, b) => (a.seen - b.seen) || (a.jitter - b.jitter))
@@ -387,6 +396,12 @@ function characterBlock(account) {
     return lines.join('\n');
 }
 
+/**
+ * The output token cap never bounded input: 100 maximum posts with a dozen long replies
+ * each is megabytes of prompt. Newest entries win; the oldest fall off first.
+ */
+const TIMELINE_CHAR_BUDGET = 48000;
+
 export function formatTimeline(posts, interactions, accounts, { now = Date.now(), windowHours = RECENT_WINDOW_HOURS } = {}) {
     const byKey = new Map(accounts.map(account => [account.key, account]));
     const label = (key, snapshot) => {
@@ -397,8 +412,7 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
     const recent = posts
         .filter(post => post.createdAt >= cutoff)
         .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, MAX_TIMELINE_POSTS)
-        .reverse();
+        .slice(0, MAX_TIMELINE_POSTS);
     if (!recent.length) {
         return 'No recent activity.';
     }
@@ -418,24 +432,37 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
         }
     }
 
-    const lines = [];
-    for (const post of recent) {
+    const blockOf = (post) => {
         const counts = countsByPost.get(post.id) ?? { like: 0, repost: 0 };
-        lines.push(`postId=${post.id} ${label(post.authorKey, post.authorSnapshot)} likes=${counts.like} reposts=${counts.repost}`);
-        lines.push(post.body);
+        const lines = [
+            `postId=${post.id} ${label(post.authorKey, post.authorSnapshot)} likes=${counts.like} reposts=${counts.repost}`,
+            inertText(post.body),
+        ];
         if (post.poll) {
             const options = post.poll.options.map((option, index) => `${index}) ${option.text}`).join(' | ');
-            lines.push(`poll: ${post.poll.question} [${options}]`);
+            lines.push(`poll: ${inertText(post.poll.question)} [${inertText(options)}]`);
         }
         const replies = (repliesByPost.get(post.id) ?? [])
             .sort((a, b) => a.createdAt - b.createdAt)
             .slice(-MAX_REPLIES_PER_POST);
         for (const reply of replies) {
-            lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)}: ${reply.content ?? ''}`);
+            lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)}: ${inertText(reply.content)}`);
         }
-        lines.push('');
+        return lines.join('\n');
+    };
+
+    // Newest first, so the budget drops the oldest history rather than the freshest.
+    const blocks = [];
+    let used = 0;
+    for (const post of recent) {
+        const block = blockOf(post);
+        if (blocks.length && used + block.length > TIMELINE_CHAR_BUDGET) {
+            break;
+        }
+        blocks.push(block);
+        used += block.length + 1;
     }
-    return lines.join('\n').trim();
+    return blocks.reverse().join('\n\n').trim();
 }
 
 export function buildContextMessage({ accounts, active, persona, posts = [], interactions = [], settings, now = Date.now(), localTime = '' }) {
@@ -658,8 +685,10 @@ function cleanPoll(poll, enabled) {
     if (!enabled || !isPlainObject(poll)) {
         return null;
     }
+    // Truncate first, then dedupe: two options differing only past the limit would
+    // otherwise pass as distinct and be stored identical.
     const options = (Array.isArray(poll.options) ? poll.options : [])
-        .map(option => String(typeof option === 'string' ? option : option?.text ?? '').trim())
+        .map(option => String(typeof option === 'string' ? option : option?.text ?? '').trim().slice(0, 120))
         .filter(Boolean);
     const unique = [...new Set(options)].slice(0, 4);
     if (unique.length < 2) {
@@ -667,8 +696,17 @@ function cleanPoll(poll, enabled) {
     }
     return {
         question: String(poll.question ?? '').trim().slice(0, 200),
-        options: unique.map((text, index) => ({ id: `option-${index}`, text: text.slice(0, 120) })),
+        options: unique.map((text, index) => ({ id: `option-${index}`, text })),
     };
+}
+
+/**
+ * Feed text is model output. Wherever it meets the host's prompt machinery it must stay
+ * inert data, so {{macro}} syntax is broken up with a zero-width space and can never be
+ * expanded by generateRaw or the prompt builder.
+ */
+export function inertText(text) {
+    return String(text ?? '').replace(/\{\{/g, '{\u200b{');
 }
 
 /**
@@ -681,6 +719,7 @@ function cleanPoll(poll, enabled) {
  */
 export function materializeRefresh(parsed, {
     accounts,
+    allowedActorKeys = null,
     settings,
     posts: existingPosts = [],
     interactions: existingInteractions = [],
@@ -689,6 +728,7 @@ export function materializeRefresh(parsed, {
 } = {}) {
     const warnings = [];
     const byHandle = handleIndex(accounts);
+    const actorKeys = allowedActorKeys ? new Set(allowedActorKeys) : null;
     const existingPostIds = new Set(existingPosts.map(post => post.id));
     const existingReplyIds = new Set(existingInteractions.filter(item => item.type === 'reply').map(item => item.id));
     const pollByPostId = new Map(existingPosts.filter(post => post.poll).map(post => [post.id, post.poll]));
@@ -709,6 +749,10 @@ export function materializeRefresh(parsed, {
         }
         if (account.kind === KIND_PERSONA) {
             warnings.push(`${what}: dropped, the model wrote as your persona`);
+            return null;
+        }
+        if (actorKeys && !actorKeys.has(account.key)) {
+            warnings.push(`${what}: dropped, @${account.handle} is not active this refresh`);
             return null;
         }
         return account;
@@ -755,7 +799,13 @@ export function materializeRefresh(parsed, {
             authorSnapshot: snapshotOf(author),
         };
         if (draft?.tempId) {
-            tempIds.set(String(draft.tempId), post.id);
+            const tempKey = String(draft.tempId);
+            // First post wins: a duplicate must not silently retarget interactions.
+            if (tempIds.has(tempKey)) {
+                warnings.push(`post: duplicate tempId "${tempKey}", later posts cannot be targeted by it`);
+            } else {
+                tempIds.set(tempKey, post.id);
+            }
         }
         if (post.poll) {
             pollByPostId.set(post.id, post.poll);
@@ -824,13 +874,17 @@ export function materializeRefresh(parsed, {
             const parent = draft?.parentInteractionId ? String(draft.parentInteractionId) : '';
             if (parent && existingReplyIds.has(parent)) {
                 const parentReply = existingInteractions.find(item => item.id === parent);
-                if (parentReply && parentReply.actorKey !== actor.key) {
+                // The parent must be a reply to THIS post; a cross-post parent would
+                // invent a conversation that never happened.
+                if (parentReply && parentReply.actorKey !== actor.key && parentReply.postId === postId) {
                     parentInteractionId = parent;
                 }
             }
         } else if (type === 'vote') {
             const poll = pollByPostId.get(postId);
-            const index = Number(draft?.pollOptionIndex);
+            const index = draft?.pollOptionIndex;
+            // Strict integer: Number(null)/Number('') are 0, which would vote for the
+            // first option on malformed input.
             if (!poll || !Number.isInteger(index) || index < 0 || index >= poll.options.length) {
                 warnings.push(`vote: invalid option for post ${postId}`);
                 continue;
@@ -855,6 +909,7 @@ export function materializeRefresh(parsed, {
 
     const followLimit = Math.max(12, accounts.length * 2);
     const outFollows = [];
+    const seenFollowPairs = new Set();
     for (const draft of parsed.follows) {
         if (outFollows.length >= followLimit) {
             break;
@@ -864,6 +919,13 @@ export function materializeRefresh(parsed, {
         if (!actor || !target || actor.key === target.key) {
             continue;
         }
+        // Dedupe first: twelve copies of one follow must not eat the cap and starve
+        // the unique follows behind them.
+        const pair = `${actor.key}|${target.key}`;
+        if (seenFollowPairs.has(pair)) {
+            continue;
+        }
+        seenFollowPairs.add(pair);
         outFollows.push({ actorKey: actor.key, targetKey: target.key });
     }
 
@@ -883,7 +945,7 @@ export function digestLines(posts, interactions, accounts, { since = 0, limit = 
         if (post.createdAt < since || (wanted && !wanted.has(post.authorKey))) {
             continue;
         }
-        rows.push({ at: post.createdAt, text: `${nameOf(post.authorKey, post.authorSnapshot)} posted: ${post.body}` });
+        rows.push({ at: post.createdAt, text: `${nameOf(post.authorKey, post.authorSnapshot)} posted: ${inertText(post.body)}` });
     }
 
     for (const item of interactions) {
@@ -894,7 +956,7 @@ export function digestLines(posts, interactions, accounts, { since = 0, limit = 
         const targetName = target ? nameOf(target.authorKey, target.authorSnapshot) : 'a post';
         const actor = nameOf(item.actorKey, item.actorSnapshot);
         if (item.type === 'reply') {
-            rows.push({ at: item.createdAt, text: `${actor} replied to ${targetName}: ${item.content}` });
+            rows.push({ at: item.createdAt, text: `${actor} replied to ${targetName}: ${inertText(item.content)}` });
         } else if (item.type === 'repost') {
             rows.push({ at: item.createdAt, text: `${actor} reposted ${targetName}.` });
         } else if (item.type === 'like') {
@@ -923,8 +985,4 @@ export function needsCatchUp(settings, now = Date.now()) {
         return false;
     }
     return now - settings.lastRefreshAt >= settings.catchUpHours * 3600 * 1000;
-}
-
-export function mentionedHandles(text) {
-    return [...String(text ?? '').matchAll(/@([a-z0-9_]{1,20})/gi)].map(match => match[1].toLowerCase());
 }
