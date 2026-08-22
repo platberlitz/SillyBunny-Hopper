@@ -1,8 +1,8 @@
 {
     "display_name": "Twitlike",
     "author": "platberlitz",
-    "version": "0.1.0",
-    "description": "A pretend social timeline for your own cast. Your persona and the characters you invite get profiles and post at each other; one refresh writes a batch of posts, replies, reposts and likes. Optionally feeds recent activity back into your chats.",
+    "version": "0.2.0",
+    "description": "Persona-scoped pretend social timelines with editable profiles, Scenario Notes and independent character casts. Optionally feeds recent activity back into chats.",
     "requires": [],
     "optional": [],
     "dependencies": [],

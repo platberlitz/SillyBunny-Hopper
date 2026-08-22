@@ -5,15 +5,21 @@ import {
     applyCarryover,
     avatarUrl,
     clearCarryover,
+    createSession,
     currentAccounts,
     ensureCharacters,
+    ensureActiveSession,
     flushFeed,
+    getScenarioNotes,
+    getSession,
     getSettings,
     listConnectionProfiles,
     loadFeed,
     runRefresh,
     saveFeedDebounced,
+    selectSession,
     updateSettings,
+    updateSession,
     writeFeed,
 } from '../src/api.js';
 import { SETTINGS_KEY } from '../src/core.js';
@@ -36,7 +42,15 @@ function makeContext(overrides = {}) {
         groupId: null,
         name1: 'Me',
         userAvatar: 'me.png',
-        powerUserSettings: { persona_description: 'a person' },
+        powerUserSettings: {
+            personas: { 'me.png': 'Me' },
+            persona_descriptions: {
+                'me.png': {
+                    description: 'a person',
+                    appendices: [{ id: 'beach', name: 'Beach trip', description: 'Currently on holiday.' }],
+                },
+            },
+        },
         extensionSettings: { [SETTINGS_KEY]: { invited: ['ada.png', 'bo.png'] }, disabledExtensions: [] },
         eventTypes: { APP_READY: 'app_ready', CHAT_CHANGED: 'chat_changed' },
         uuidv4: (() => { let n = 0; return () => `u${++n}`; })(),
@@ -106,9 +120,61 @@ test('ensureCharacters refreshes before the list is trusted', async () => {
 });
 
 test('currentAccounts includes the persona and only invited characters', async () => {
-    updateSettings({ invited: ['ada.png'] });
+    const session = ensureActiveSession();
+    updateSession(session.id, { invited: ['ada.png'] });
     const accounts = await currentAccounts();
     assert.deepEqual(accounts.map(a => a.key), ['persona:me.png', 'character:ada.png']);
+});
+
+test('the migrated timeline binds once to the current persona', () => {
+    const session = ensureActiveSession();
+    assert.equal(session.id, 'legacy');
+    assert.equal(session.personaId, 'me.png');
+    assert.equal(getSettings().activeSessionByPersona['me.png'], 'legacy');
+});
+
+test('timeline persona profile and Scenario Notes are session-local', async () => {
+    const session = ensureActiveSession();
+    assert.deepEqual(getScenarioNotes('me.png').map(note => note.id), ['beach']);
+    updateSession(session.id, {
+        scenarioNoteIds: ['beach'],
+        personaProfile: { name: 'M.', handle: 'm_here', bio: 'quiet account', location: 'Away' },
+    });
+    const persona = (await currentAccounts(session.id)).find(account => account.kind === 'persona');
+    assert.equal(persona.name, 'M.');
+    assert.equal(persona.handle, 'm_here');
+    assert.equal(persona.bio, 'quiet account');
+    assert.match(persona.description, /\(Beach trip\)\nCurrently on holiday/);
+    assert.equal(current.powerUserSettings.persona_descriptions['me.png'].activeAppendices, undefined);
+});
+
+test('active timeline choice is remembered independently per persona', () => {
+    current.powerUserSettings.personas['other.png'] = 'Other';
+    current.powerUserSettings.persona_descriptions['other.png'] = { description: 'another person' };
+    const mine = ensureActiveSession('me.png');
+    const other = createSession({ name: 'Other timeline', personaId: 'other.png' });
+    assert.equal(ensureActiveSession('other.png').id, other.id);
+    assert.equal(ensureActiveSession('me.png').id, mine.id);
+});
+
+test('selecting a missing persona leaves the timeline owner and active choice unchanged', async () => {
+    const session = ensureActiveSession();
+    const before = getSettings();
+    await assert.rejects(() => selectSession(session.id, { personaId: 'missing.png' }), /no longer available/);
+    assert.equal(getSession(session.id).personaId, 'me.png');
+    assert.equal(getSettings().activeSessionId, before.activeSessionId);
+    assert.deepEqual(getSettings().activeSessionByPersona, before.activeSessionByPersona);
+});
+
+test('a failed persona switch preserves concurrent session updates', async () => {
+    current.powerUserSettings.personas['other.png'] = 'Other';
+    const session = ensureActiveSession();
+    const switching = selectSession(session.id, { personaId: 'other.png' });
+    updateSession(session.id, { feedPath: '/user/files/just-saved.json' });
+
+    await assert.rejects(() => switching, /host could not switch/);
+    assert.equal(getSession(session.id).personaId, 'me.png');
+    assert.equal(getSession(session.id).feedPath, '/user/files/just-saved.json');
 });
 
 test('avatarUrl uses the persona thumbnail type for the persona', async () => {
@@ -143,9 +209,34 @@ test('the feed is written to the files endpoint, never into settings', async () 
     assert.deepEqual(getSettings().shards, ['/user/files/twitterlike-feed.json']);
 });
 
+test('each new timeline writes to its own feed file', async () => {
+    const legacy = ensureActiveSession();
+    const second = createSession({ name: 'Close friends', personaId: 'me.png', invited: ['ada.png'] });
+    fakeFetch((_url, init) => {
+        const { name } = JSON.parse(init.body);
+        return { ok: true, status: 200, json: async () => ({ path: `/user/files/${name}` }) };
+    });
+    await writeFeed({ posts: [], interactions: [] }, legacy.id);
+    await writeFeed({ posts: [], interactions: [] }, second.id);
+    const names = fetchCalls.map(([, init]) => JSON.parse(init.body).name);
+    assert.equal(names[0], 'twitterlike-feed.json');
+    assert.match(names[1], /^twitterlike-feed-u1\.json$/);
+    assert.notEqual(getSession(legacy.id).feedPath, getSession(second.id).feedPath);
+});
+
+test('different timeline sessions derive different character casts', async () => {
+    const first = ensureActiveSession();
+    updateSession(first.id, { invited: ['ada.png'] });
+    const second = createSession({ personaId: 'me.png', invited: ['bo.png'] });
+    assert.deepEqual((await currentAccounts(first.id)).filter(a => a.kind === 'character').map(a => a.entityId), ['ada.png']);
+    assert.deepEqual((await currentAccounts(second.id)).filter(a => a.kind === 'character').map(a => a.entityId), ['bo.png']);
+});
+
 test('writeFeed reports a failed save instead of pretending it worked', async () => {
     fakeFetch(() => ({ ok: false, status: 500, json: async () => ({}) }));
     await assert.rejects(() => writeFeed({ posts: [], interactions: [] }), /Could not save the feed \(500\)/);
+    await flushFeed();
+    assert.equal(fetchCalls.length, 1, 'a failed transactional write must not silently retry later');
 });
 
 function decodeUpload(init) {
@@ -182,6 +273,82 @@ test('overlapping saves are serialised so an older upload cannot win', async () 
     assert.match(uploads[1], /newer/);
 });
 
+test('a failed pending edit is made durable before a newer direct save', async () => {
+    let started = 0;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const uploads = [];
+    fakeFetch(async (_url, init) => {
+        started += 1;
+        uploads.push(decodeUpload(init));
+        if (started === 1) {
+            await gate;
+            return { ok: false, status: 500, json: async () => ({}) };
+        }
+        return { ok: true, status: 200, json: async () => ({ path: '/user/files/twitterlike-feed.json' }) };
+    });
+
+    saveFeedDebounced({ posts: [{ id: 'p1', body: 'stale' }], interactions: [] }, 0);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const latest = writeFeed({ posts: [{ id: 'p2', body: 'latest' }], interactions: [] });
+    release();
+    await latest;
+    await flushFeed();
+
+    assert.equal(uploads.length, 3);
+    assert.match(uploads[0], /stale/);
+    assert.match(uploads[1], /stale/);
+    assert.match(uploads[2], /latest/);
+});
+
+test('concurrent direct saves each wait for their own upload', async () => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const uploads = [];
+    fakeFetch(async (_url, init) => {
+        uploads.push(decodeUpload(init));
+        if (uploads.length === 1) {
+            await gate;
+        }
+        return { ok: true, status: 200, json: async () => ({ path: `/user/files/save-${uploads.length}.json` }) };
+    });
+
+    const first = writeFeed({ posts: [{ id: 'p1', body: 'first' }], interactions: [] });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const second = writeFeed({ posts: [{ id: 'p2', body: 'second' }], interactions: [] });
+    assert.equal(uploads.length, 1);
+    release();
+
+    assert.equal(await first, '/user/files/save-1.json');
+    assert.equal(await second, '/user/files/save-2.json');
+    assert.equal(uploads.length, 2);
+    assert.match(uploads[0], /first/);
+    assert.match(uploads[1], /second/);
+});
+
+test('an aborted transaction waiting in the save queue is never uploaded', async () => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    fakeFetch(async () => {
+        await gate;
+        return { ok: true, status: 200, json: async () => ({ path: '/user/files/twitterlike-feed.json' }) };
+    });
+    saveFeedDebounced({ posts: [{ id: 'p1', body: 'visible' }], interactions: [] }, 0);
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    const controller = new AbortController();
+    const transaction = writeFeed(
+        { posts: [{ id: 'p2', body: 'cancelled' }], interactions: [] },
+        ensureActiveSession().id,
+        { signal: controller.signal },
+    );
+    controller.abort();
+    release();
+
+    await assert.rejects(() => transaction, error => error?.name === 'AbortError');
+    assert.equal(fetchCalls.length, 1);
+});
+
 test('a failed debounced save is retried by flushFeed instead of being lost', async () => {
     let failing = true;
     fakeFetch(() => (failing
@@ -202,6 +369,13 @@ test('loadFeed returns an empty feed when nothing has been saved yet', async () 
     const feed = await loadFeed();
     assert.deepEqual(feed, { version: 1, posts: [], interactions: [] });
     assert.equal(fetchCalls.length, 0);
+});
+
+test('unsaved timelines receive independent empty feed arrays', async () => {
+    const first = await loadFeed();
+    first.posts.push({ id: 'local-only' });
+    const second = await loadFeed();
+    assert.deepEqual(second.posts, []);
 });
 
 test('a corrupt feed file fails closed instead of becoming a writable empty feed', async () => {
@@ -310,7 +484,8 @@ function emptyFeed() {
 }
 
 test('a refresh with no cast explains itself rather than calling the model', async () => {
-    updateSettings({ invited: [], ambient: false });
+    const session = ensureActiveSession();
+    updateSession(session.id, { invited: [], ambient: false });
     await assert.rejects(() => runRefresh({ feed: emptyFeed() }), /Invite a character first/);
     assert.equal(current.calls.filter(call => call[0] === 'generateRaw').length, 0);
 });
@@ -323,7 +498,17 @@ test('a refresh stores posts and interactions and stamps lastRefreshAt', async (
     assert.equal(result.posts.length, 1);
     assert.equal(result.interactions.length, 1);
     assert.equal(feed.posts.length, 1);
-    assert.ok(getSettings().lastRefreshAt > 0);
+    assert.ok(getSession(ensureActiveSession().id).lastRefreshAt > 0);
+});
+
+test('a refresh commits only to the session it started with', async () => {
+    const first = ensureActiveSession();
+    const second = createSession({ personaId: 'me.png', invited: ['bo.png'] });
+    current.nextResponse = GOOD_BATCH;
+    updateSettings({ profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+    await runRefresh({ sessionId: first.id, feed: emptyFeed() });
+    assert.ok(getSession(first.id).lastRefreshAt > 0);
+    assert.equal(getSession(second.id).lastRefreshAt, 0);
 });
 
 test('a saved connection profile is preferred over generateRaw', async () => {
@@ -400,7 +585,7 @@ test('follows returned by a refresh are stored against the actor', async () => {
     });
     updateSettings({ profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
     await runRefresh({ feed: emptyFeed() });
-    assert.deepEqual(getSettings().follows['character:ada.png'], ['character:bo.png']);
+    assert.deepEqual(getSession(ensureActiveSession().id).follows['character:ada.png'], ['character:bo.png']);
 });
 
 test('a failed save leaves the timeline and lastRefreshAt untouched', async () => {
@@ -411,7 +596,23 @@ test('a failed save leaves the timeline and lastRefreshAt untouched', async () =
     await assert.rejects(() => runRefresh({ feed }), /Could not save/);
     assert.equal(feed.posts.length, 0);
     assert.equal(feed.interactions.length, 0);
-    assert.ok(!(getSettings().lastRefreshAt > 0));
+    assert.ok(!(getSession(ensureActiveSession().id).lastRefreshAt > 0));
+});
+
+test('a refresh commits in memory once its upload is durable', async () => {
+    const controller = new AbortController();
+    current.nextResponse = GOOD_BATCH;
+    updateSettings({ profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+    fakeFetch(() => {
+        controller.abort();
+        return { ok: true, status: 200, json: async () => ({ path: '/user/files/twitterlike-feed.json' }) };
+    });
+    const feed = emptyFeed();
+
+    await runRefresh({ feed, signal: controller.signal });
+
+    assert.equal(feed.posts.length, 1);
+    assert.ok(getSession(ensureActiveSession().id).lastRefreshAt > 0);
 });
 
 test('a follow made while the model thinks survives the refresh commit', async () => {
@@ -424,11 +625,12 @@ test('a follow made while the model thinks survives the refresh commit', async (
     updateSettings({ profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
     const refresh = runRefresh({ feed: emptyFeed() });
     await new Promise(resolve => setTimeout(resolve, 5));
-    updateSettings({ follows: { 'character:bo.png': ['persona:me.png'] } });
+    const session = ensureActiveSession();
+    updateSession(session.id, { follows: { 'character:bo.png': ['persona:me.png'] } });
     release();
     await refresh;
 
-    const follows = getSettings().follows;
+    const follows = getSession(session.id).follows;
     assert.deepEqual(follows['character:ada.png'], ['character:bo.png']);
     assert.deepEqual(follows['character:bo.png'], ['persona:me.png']);
 });
@@ -506,4 +708,22 @@ test('carryover with nothing recent clears instead of writing an empty header', 
         interactions: [],
     });
     assert.equal(block, '');
+});
+
+test('a stale carryover build cannot replace the current prompt', async () => {
+    updateSettings({ carry: { enabled: true, hours: 48, items: 8, depth: 1 } });
+    const session = ensureActiveSession();
+    await currentAccounts(session.id);
+    const feed = {
+        posts: [{
+            id: 'p1',
+            authorKey: 'character:ada.png',
+            body: 'old session text',
+            createdAt: Date.now(),
+            authorSnapshot: { name: 'Ada' },
+        }],
+        interactions: [],
+    };
+    await applyCarryover(feed, session.id, { isCurrent: () => false });
+    assert.equal(current.calls.filter(call => call[0] === 'setExtensionPrompt').length, 0);
 });

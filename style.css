@@ -92,6 +92,16 @@
     display: none !important;
 }
 
+/* Companion Agents is a body sibling, not part of the chat workspace. */
+body:has(> #sheld[data-sbtw-mode='on']) :is(
+    #ica--tracker-panel,
+    #ica--tracker-panel-handle,
+    #ica_tracker_panel_wand_item,
+    #ica_companions_wand_item
+) {
+    display: none !important;
+}
+
 /* The workspace and extensions drawer live outside the shell, so all scopes need tokens. */
 #sheld[data-sbtw-mode='on'],
 .sbtw-shell,
@@ -702,6 +712,27 @@
 }
 
 /* --- settings ----------------------------------------------------------- */
+
+.sbtw-session-bar {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem var(--sbtw-gap);
+    border-bottom: 1px solid var(--sbtw-divider);
+    background: var(--sbtw-surface);
+}
+
+.sbtw-session-select {
+    min-width: 0;
+    flex: 1;
+}
+
+.sbtw-session-bar .sbtw-btn {
+    flex: none;
+}
 
 .sbtw-settings h3 {
     margin: 1.2rem 0 0.4rem;

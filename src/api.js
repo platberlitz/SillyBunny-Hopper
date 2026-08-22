@@ -54,6 +54,167 @@ export function updateSettings(patch) {
     return next;
 }
 
+export function listSessions() {
+    return Object.values(getSettings().sessions);
+}
+
+export function getSession(sessionId) {
+    return getSettings().sessions[sessionId] ?? null;
+}
+
+export function updateSession(sessionId, patch) {
+    const settings = getSettings();
+    const current = settings.sessions[sessionId];
+    if (!current) {
+        throw new Error('That timeline session no longer exists.');
+    }
+    const sessions = { ...settings.sessions, [sessionId]: { ...current, ...patch, id: sessionId } };
+    const next = updateSettings({ sessions });
+    const session = next.sessions[sessionId];
+    if (next.activeSessionId === sessionId && session.personaId) {
+        return updateSettings({
+            activeSessionByPersona: { ...next.activeSessionByPersona, [session.personaId]: sessionId },
+        }).sessions[sessionId];
+    }
+    return session;
+}
+
+export function ensureActiveSession(personaId = ctx().userAvatar ?? '') {
+    const settings = getSettings();
+    const sessions = settings.sessions;
+    let session = sessions[settings.activeSessionByPersona[personaId]];
+    if (!session && settings.activeSessionId) {
+        const active = sessions[settings.activeSessionId];
+        session = active?.personaId === personaId ? active : null;
+    }
+    session ??= Object.values(sessions).find(item => item.personaId === personaId);
+    if (!session) {
+        const unowned = Object.values(sessions).find(item => !item.personaId);
+        if (unowned) {
+            session = updateSession(unowned.id, {
+                personaId,
+                personaProfile: settings.profiles[`${KIND_PERSONA}:${personaId}`] ?? unowned.personaProfile,
+            });
+        }
+    }
+    if (!session) {
+        session = createSession({ personaId });
+    }
+    const fresh = getSettings();
+    if (fresh.activeSessionId !== session.id || fresh.activeSessionByPersona[personaId] !== session.id) {
+        updateSettings({
+            activeSessionId: session.id,
+            activeSessionByPersona: { ...fresh.activeSessionByPersona, [personaId]: session.id },
+        });
+    }
+    return getSession(session.id);
+}
+
+export function createSession({ name = '', type = '', personaId = '', invited = [], ambient = false } = {}) {
+    const context = ctx();
+    const settings = getSettings();
+    let id = String(context.uuidv4?.() ?? `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80) || `${Date.now()}`;
+    while (settings.sessions[id]) {
+        id = `${id}x`;
+    }
+    const session = {
+        id,
+        name: name || `Timeline ${Object.keys(settings.sessions).length + 1}`,
+        type: type || 'Open timeline',
+        personaId: personaId || context.userAvatar || '',
+        invited,
+        ambient,
+        scenarioNoteIds: [],
+        personaProfile: {},
+        follows: {},
+        lastRefreshAt: 0,
+        feedPath: '',
+    };
+    const next = updateSettings({
+        sessions: { ...settings.sessions, [id]: session },
+        activeSessionId: id,
+        activeSessionByPersona: session.personaId
+            ? { ...settings.activeSessionByPersona, [session.personaId]: id }
+            : settings.activeSessionByPersona,
+    });
+    return next.sessions[id];
+}
+
+export async function selectSession(sessionId, { personaId = null } = {}) {
+    const before = getSettings();
+    const session = before.sessions[sessionId];
+    if (!session) {
+        throw new Error('That timeline session no longer exists.');
+    }
+    const targetPersonaId = personaId ?? session.personaId;
+    if (targetPersonaId && !listPersonas().some(persona => persona.entityId === targetPersonaId)) {
+        throw new Error('That persona is no longer available.');
+    }
+    const changedPersona = targetPersonaId !== session.personaId;
+    const sessions = changedPersona
+        ? {
+            ...before.sessions,
+            [sessionId]: {
+                ...session,
+                personaId: targetPersonaId,
+                scenarioNoteIds: [],
+                personaProfile: {},
+            },
+        }
+        : before.sessions;
+    const activeSessionByPersona = Object.fromEntries(
+        Object.entries(before.activeSessionByPersona).filter(([, id]) => id !== sessionId),
+    );
+    if (targetPersonaId) {
+        activeSessionByPersona[targetPersonaId] = sessionId;
+    }
+    updateSettings({
+        sessions,
+        activeSessionId: sessionId,
+        activeSessionByPersona,
+    });
+    if (targetPersonaId && targetPersonaId !== ctx().userAvatar) {
+        try {
+            const { setUserAvatar } = await import('/scripts/personas.js');
+            await setUserAvatar(targetPersonaId, { toastPersonaNameChange: false });
+        } catch (error) {
+            if (ctx().userAvatar !== targetPersonaId) {
+                const fresh = getSettings();
+                const freshSession = fresh.sessions[sessionId];
+                const rolledBackSession = changedPersona && freshSession?.personaId === targetPersonaId
+                    ? {
+                        ...freshSession,
+                        personaId: session.personaId,
+                        scenarioNoteIds: session.scenarioNoteIds,
+                        personaProfile: session.personaProfile,
+                    }
+                    : freshSession;
+                const rolledBackByPersona = { ...fresh.activeSessionByPersona };
+                if (targetPersonaId && rolledBackByPersona[targetPersonaId] === sessionId) {
+                    if (before.activeSessionByPersona[targetPersonaId]) {
+                        rolledBackByPersona[targetPersonaId] = before.activeSessionByPersona[targetPersonaId];
+                    } else {
+                        delete rolledBackByPersona[targetPersonaId];
+                    }
+                }
+                if (session.personaId && before.activeSessionByPersona[session.personaId]) {
+                    rolledBackByPersona[session.personaId] = before.activeSessionByPersona[session.personaId];
+                }
+                updateSettings({
+                    sessions: rolledBackSession
+                        ? { ...fresh.sessions, [sessionId]: rolledBackSession }
+                        : fresh.sessions,
+                    activeSessionId: fresh.activeSessionId === sessionId ? before.activeSessionId : fresh.activeSessionId,
+                    activeSessionByPersona: rolledBackByPersona,
+                });
+                throw new Error(`The host could not switch to that persona (${error.message}).`);
+            }
+            console.warn('[Twitlike] the host switched persona but a listener reported an error', error);
+        }
+    }
+    return getSession(sessionId);
+}
+
 // --- characters and personas ---------------------------------------------
 
 /**
@@ -68,28 +229,67 @@ export async function ensureCharacters() {
     return ctx().characters ?? [];
 }
 
-export function getPersona() {
+export function listPersonas() {
     const context = ctx();
-    const entityId = context.userAvatar;
+    const personas = context.powerUserSettings?.personas ?? {};
+    const list = Object.entries(personas).map(([entityId, name]) => ({ entityId, name: String(name || 'You') }));
+    if (context.userAvatar && !list.some(persona => persona.entityId === context.userAvatar)) {
+        list.push({ entityId: context.userAvatar, name: context.name1 || 'You' });
+    }
+    return list;
+}
+
+export function getScenarioNotes(personaId) {
+    const appendices = ctx().powerUserSettings?.persona_descriptions?.[personaId]?.appendices;
+    if (!Array.isArray(appendices)) {
+        return [];
+    }
+    return appendices.map((note, index) => ({
+        id: String(note?.id || `scenario-note-${index}`),
+        name: String(note?.name || `Scenario Note ${index + 1}`),
+        description: String(note?.description ?? ''),
+    })).filter(note => note.id);
+}
+
+export function getPersona(personaId = ctx().userAvatar, scenarioNoteIds = []) {
+    const context = ctx();
+    const entityId = personaId;
     if (!entityId) {
         return null;
     }
+    const descriptor = context.powerUserSettings?.persona_descriptions?.[entityId] ?? {};
+    const selected = new Set(scenarioNoteIds);
+    const description = [String(descriptor.description ?? '').trim()];
+    for (const note of getScenarioNotes(entityId)) {
+        if (selected.has(note.id) && note.description.trim()) {
+            description.push(`(${note.name})\n${note.description.trim()}`);
+        }
+    }
     return {
         entityId,
-        name: context.name1 || 'You',
-        description: context.powerUserSettings?.persona_description ?? '',
+        name: context.powerUserSettings?.personas?.[entityId] || (entityId === context.userAvatar ? context.name1 : '') || 'You',
+        description: description.filter(Boolean).join('\n\n'),
     };
 }
 
-export async function currentAccounts() {
+export async function currentAccounts(sessionId = ensureActiveSession().id) {
     const settings = getSettings();
+    const session = settings.sessions[sessionId];
+    if (!session) {
+        throw new Error('That timeline session no longer exists.');
+    }
     const characters = await ensureCharacters();
+    const persona = getPersona(session.personaId, session.scenarioNoteIds);
+    const profiles = { ...settings.profiles };
+    if (persona?.entityId) {
+        profiles[`${KIND_PERSONA}:${persona.entityId}`] = session.personaProfile;
+    }
     return deriveAccounts({
         characters,
-        invited: settings.invited,
-        persona: getPersona(),
-        ambient: settings.ambient,
-        profiles: settings.profiles,
+        invited: session.invited,
+        persona,
+        ambient: session.ambient,
+        profiles,
     });
 }
 
@@ -106,7 +306,7 @@ export function avatarUrl(account) {
 
 // --- feed storage ---------------------------------------------------------
 
-const EMPTY_FEED = { version: 1, posts: [], interactions: [] };
+const emptyFeed = () => ({ version: 1, posts: [], interactions: [] });
 const INTERACTION_TYPES = new Set(['like', 'repost', 'reply', 'vote']);
 
 const isObj = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -193,7 +393,7 @@ function storedInteraction(raw, validPostIds) {
  */
 function normalizeFeed(raw) {
     if (!isObj(raw) || !Array.isArray(raw.posts) || !Array.isArray(raw.interactions)) {
-        return { ...EMPTY_FEED };
+        return emptyFeed();
     }
     const posts = [];
     const postIds = new Set();
@@ -226,10 +426,15 @@ function normalizeFeed(raw) {
  * Fails closed: an unreadable configured feed throws instead of coming back as an empty
  * timeline, because a writable empty feed would let the next save erase real history.
  */
-export async function loadFeed() {
-    const path = getSettings().shards[0];
+export async function loadFeed(sessionId = ensureActiveSession().id) {
+    const settings = getSettings();
+    const session = settings.sessions[sessionId];
+    if (!session) {
+        throw new Error('That timeline session no longer exists.');
+    }
+    const path = session.feedPath || (sessionId === 'legacy' ? settings.shards[0] : '');
     if (!path) {
-        return { ...EMPTY_FEED };
+        return emptyFeed();
     }
     const url = `${path}?t=${Date.now()}`;
     let text = '';
@@ -248,7 +453,7 @@ export async function loadFeed() {
     // An interrupted or failed write leaves an empty file behind. There is no history in
     // there to protect, so start over rather than locking the user out of their feed.
     if (!text.trim()) {
-        return { ...EMPTY_FEED };
+        return emptyFeed();
     }
     let raw = parseJson(text);
     if (raw === null && /^[A-Za-z0-9+/\s=]+$/.test(text)) {
@@ -300,21 +505,42 @@ function toBase64(text) {
     return btoa(binary);
 }
 
-export async function writeFeed(feed) {
+function sessionFileName(session) {
+    const existing = session.feedPath.split('/').pop();
+    if (existing) {
+        return existing;
+    }
+    return session.id === 'legacy'
+        ? FEED_FILE
+        : `twitterlike-feed-${session.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80)}.json`;
+}
+
+async function uploadFeed(feed, sessionId, signal) {
     const context = ctx();
+    const session = getSession(sessionId);
+    if (!session) {
+        throw new Error('That timeline session no longer exists.');
+    }
     const body = JSON.stringify({ version: 1, posts: feed.posts, interactions: feed.interactions });
     const response = await fetch('/api/files/upload', {
         method: 'POST',
         headers: context.getRequestHeaders(),
-        body: JSON.stringify({ name: FEED_FILE, data: toBase64(body) }),
+        body: JSON.stringify({ name: sessionFileName(session), data: toBase64(body) }),
+        signal,
     });
     if (!response.ok) {
         throw new Error(`Could not save the feed (${response.status})`);
     }
     const { path } = await readJson(response, 'The file upload');
     const settings = getSettings();
-    if (settings.shards[0] !== path) {
-        updateSettings({ shards: [path] });
+    if (settings.sessions[sessionId]?.feedPath !== path) {
+        updateSettings({
+            sessions: {
+                ...settings.sessions,
+                [sessionId]: { ...settings.sessions[sessionId], feedPath: path },
+            },
+            ...(sessionId === 'legacy' ? { shards: [path] } : {}),
+        });
     }
     return path;
 }
@@ -351,12 +577,10 @@ export async function uploadImage(file) {
     return path;
 }
 
-let pendingFeed = null;
-let saveTimer = 0;
-let saveChain = Promise.resolve();
+const saveStates = new Map();
 
 function snapshotFeed(feed) {
-    return { version: 1, posts: [...feed.posts], interactions: [...feed.interactions] };
+    return structuredClone({ version: 1, posts: feed.posts, interactions: feed.interactions });
 }
 
 /**
@@ -364,33 +588,92 @@ function snapshotFeed(feed) {
  * upload keeps its snapshot queued (unless something newer arrived) so flushFeed can
  * retry it - data is only dropped from the queue once it is durable.
  */
-function enqueueSave() {
-    clearTimeout(saveTimer);
-    const snapshot = pendingFeed;
-    pendingFeed = null;
-    if (!snapshot) {
-        return saveChain;
+function saveState(sessionId) {
+    let state = saveStates.get(sessionId);
+    if (!state) {
+        state = { pending: null, timer: 0, chain: Promise.resolve(), latestRevision: 0 };
+        saveStates.set(sessionId, state);
     }
-    const attempt = saveChain.then(() => writeFeed(snapshot));
-    saveChain = attempt.then(() => {}, error => {
+    return state;
+}
+
+function queueFeed(feed, sessionId) {
+    const state = saveState(sessionId);
+    clearTimeout(state.timer);
+    state.timer = 0;
+    state.pending = {
+        revision: ++state.latestRevision,
+        feed: snapshotFeed(feed),
+    };
+}
+
+function enqueueSave(sessionId) {
+    const state = saveState(sessionId);
+    clearTimeout(state.timer);
+    state.timer = 0;
+    const pending = state.pending;
+    state.pending = null;
+    if (!pending) {
+        return state.chain;
+    }
+    const attempt = state.chain.then(() => uploadFeed(pending.feed, sessionId));
+    state.chain = attempt.then(() => {}, error => {
         console.error('[Twitlike] feed save failed', error);
-        if (!pendingFeed) {
-            pendingFeed = snapshot;
+        // A failed old upload must never come back from the dead after a newer revision.
+        if (state.latestRevision === pending.revision && !state.pending) {
+            state.pending = pending;
         }
     });
     return attempt;
 }
 
+async function flushSession(sessionId) {
+    const state = saveState(sessionId);
+    clearTimeout(state.timer);
+    state.timer = 0;
+    while (true) {
+        const chain = state.chain;
+        await chain;
+        // Another caller may have appended a write while this flush was waiting.
+        if (chain !== state.chain) {
+            continue;
+        }
+        if (!state.pending) {
+            return;
+        }
+        // One explicit attempt per loop. Failure is retained for the next flush and
+        // propagated to the caller instead of spinning forever.
+        await enqueueSave(sessionId);
+    }
+}
+
+/** Saves pending visible edits first, then commits this exact transactional snapshot. */
+export async function writeFeed(feed, sessionId = ensureActiveSession().id, { signal } = {}) {
+    await flushSession(sessionId);
+    const state = saveState(sessionId);
+    const snapshot = snapshotFeed(feed);
+    const attempt = state.chain.then(() => {
+        signal?.throwIfAborted();
+        return uploadFeed(snapshot, sessionId, signal);
+    });
+    // Keep the queue usable after a rejected transaction, but let this caller see its error.
+    state.chain = attempt.then(() => {}, () => {});
+    return attempt;
+}
+
 /** Liking three posts in a row should be one write, not three. */
-export function saveFeedDebounced(feed, delay = 1200) {
-    pendingFeed = snapshotFeed(feed);
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { enqueueSave().catch(() => {}); }, delay);
+export function saveFeedDebounced(feed, delay = 1200, sessionId = ensureActiveSession().id) {
+    const state = saveState(sessionId);
+    queueFeed(feed, sessionId);
+    state.timer = setTimeout(() => { enqueueSave(sessionId).catch(() => {}); }, delay);
 }
 
 /** Waits out any in-flight write, then writes whatever is still unsaved. */
-export async function flushFeed() {
-    return enqueueSave();
+export async function flushFeed(sessionId = '') {
+    if (sessionId) {
+        return flushSession(sessionId);
+    }
+    return Promise.all([...saveStates.keys()].map(flushSession));
 }
 
 // --- generation -----------------------------------------------------------
@@ -481,9 +764,13 @@ export async function generatePostImage(prompt, signal) {
  * re-check every quota locally before storing anything. The model is never trusted to have
  * obeyed the prompt.
  */
-export async function runRefresh({ feed, signal, onProgress = () => {} } = {}) {
+export async function runRefresh({ sessionId = ensureActiveSession().id, feed, signal, onProgress = () => {} } = {}) {
     const settings = getSettings();
-    const accounts = await currentAccounts();
+    const session = settings.sessions[sessionId];
+    if (!session) {
+        throw new Error('That timeline session no longer exists.');
+    }
+    const accounts = await currentAccounts(sessionId);
     const persona = accounts.find(account => account.kind === KIND_PERSONA) ?? null;
 
     const active = selectParticipants(accounts, settings, {
@@ -507,7 +794,7 @@ export async function runRefresh({ feed, signal, onProgress = () => {} } = {}) {
     }
 
     // Re-derive so freshly generated handles are the ones the prompt advertises.
-    const freshAccounts = await currentAccounts();
+    const freshAccounts = await currentAccounts(sessionId);
     const activeKeys = new Set(active.map(account => account.key));
     const freshActive = freshAccounts.filter(account => activeKeys.has(account.key));
     const freshPersona = freshAccounts.find(account => account.kind === KIND_PERSONA) ?? persona;
@@ -518,6 +805,7 @@ export async function runRefresh({ feed, signal, onProgress = () => {} } = {}) {
         accounts: freshAccounts,
         active: freshActive,
         persona: freshPersona,
+        session,
         posts: feed.posts,
         interactions: feed.interactions,
         settings: current,
@@ -577,21 +865,25 @@ export async function runRefresh({ feed, signal, onProgress = () => {} } = {}) {
         posts: [...feed.posts, ...result.posts],
         interactions: [...feed.interactions, ...result.interactions],
     };
-    await writeFeed(candidate);
+    await writeFeed(candidate, sessionId, { signal });
 
+    // A successful upload is the commit point. Cancellation after it must not leave the
+    // durable feed ahead of the in-memory feed and refresh timestamp.
     feed.posts.push(...result.posts);
     feed.interactions.push(...result.interactions);
 
     if (result.follows.length) {
         // Merge into the freshest settings so a follow made manually while the model was
         // thinking is not overwritten by this refresh's snapshot.
-        const follows = { ...getSettings().follows };
+        const freshSession = getSession(sessionId);
+        const follows = { ...freshSession.follows };
         for (const { actorKey, targetKey } of result.follows) {
             follows[actorKey] = [...new Set([...(follows[actorKey] ?? []), targetKey])];
         }
-        updateSettings({ follows });
+        updateSession(sessionId, { follows, lastRefreshAt: Date.now() });
+    } else {
+        updateSession(sessionId, { lastRefreshAt: Date.now() });
     }
-    updateSettings({ lastRefreshAt: Date.now() });
 
     return result;
 }
@@ -626,14 +918,16 @@ export function clearCarryover() {
  * default; clears itself whenever it has nothing to say, so a disabled or empty feed never
  * leaves a stale block behind.
  */
-export async function applyCarryover(feed) {
+export async function applyCarryover(feed, sessionId = ensureActiveSession().id, { isCurrent = () => true } = {}) {
     const settings = getSettings();
     if (!settings.carry.enabled) {
-        clearCarryover();
+        if (isCurrent()) {
+            clearCarryover();
+        }
         return '';
     }
 
-    const accounts = await currentAccounts();
+    const accounts = await currentAccounts(sessionId);
     const since = Date.now() - settings.carry.hours * 3600 * 1000;
     const lines = digestLines(feed.posts, feed.interactions, accounts, {
         since,
@@ -652,7 +946,12 @@ export async function applyCarryover(feed) {
     }
 
     if (!block) {
-        clearCarryover();
+        if (isCurrent()) {
+            clearCarryover();
+        }
+        return '';
+    }
+    if (!isCurrent()) {
         return '';
     }
     context.setExtensionPrompt(

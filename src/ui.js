@@ -23,6 +23,7 @@ const SEARCH_DEBOUNCE_MS = 150;
 
 const state = {
     body: null,
+    session: null,
     feed: null,
     accounts: [],
     view: 'timeline',
@@ -41,6 +42,11 @@ const owned = new Set();
 
 // One workspace at a time; async work belongs to a session and dies with it.
 let openTask = null;
+let sessionTask = null;
+let closingTask = Promise.resolve();
+let transitionEpoch = 0;
+let pendingPersonaSwitch = '';
+let accountRequest = 0;
 let sessionEpoch = 0;
 let workController = null;
 const scrollPositions = new Map();
@@ -182,7 +188,7 @@ function activityAt(post) {
 
 function followingKeys() {
     const me = personaAccount();
-    return new Set(me ? (api.getSettings().follows[me.key] ?? []) : []);
+    return new Set(me ? (state.session?.follows[me.key] ?? []) : []);
 }
 
 function visiblePosts() {
@@ -195,7 +201,7 @@ function visiblePosts() {
 }
 
 function persist() {
-    api.saveFeedDebounced(state.feed);
+    api.saveFeedDebounced(state.feed, 1200, state.session.id);
 }
 
 // --- rendering ------------------------------------------------------------
@@ -551,7 +557,8 @@ function profileView() {
         .filter(Boolean);
     const media = posts.filter(post => post.image?.url);
 
-    const followerCount = Object.values(api.getSettings().follows).filter(list => list.includes(account.key)).length;
+    const follows = state.session?.follows ?? {};
+    const followerCount = Object.values(follows).filter(list => list.includes(account.key)).length;
     const canFollow = me && account.key !== me.key && account.kind !== KIND_AMBIENT;
 
     return el('div', { className: 'sbtw-profile' }, [
@@ -562,7 +569,7 @@ function profileView() {
                 el('div', { className: 'sbtw-handle', text: `@${account.handle}` }),
                 account.bio ? el('div', { className: 'sbtw-bio', text: account.bio }) : null,
                 account.location ? el('div', { className: 'sbtw-location' }, [icon('fa-location-dot'), el('span', { text: account.location })]) : null,
-                el('div', { className: 'sbtw-counts', text: `${(api.getSettings().follows[account.key] ?? []).length} following  ·  ${followerCount} followers` }),
+                el('div', { className: 'sbtw-counts', text: `${(follows[account.key] ?? []).length} following  ·  ${followerCount} followers` }),
             ]),
             canFollow
                 ? button(following.has(account.key) ? 'Following' : 'Follow',
@@ -663,10 +670,58 @@ function checkbox(label, checked, onChange, visual = null) {
 
 function settingsView() {
     const settings = api.getSettings();
-    const characters = globalThis.SillyTavern.getContext().characters ?? [];
+    const context = globalThis.SillyTavern.getContext();
+    const session = state.session;
+    const characters = context.characters ?? [];
     const profiles = api.listConnectionProfiles();
+    const personas = api.listPersonas();
+    const notes = api.getScenarioNotes(session.personaId);
+    const groups = (context.groups ?? []).filter(group => Array.isArray(group.members) && group.members.length);
 
-    const save = (patch) => { api.updateSettings(patch); refreshAccounts().then(render); };
+    const refreshSettings = () => {
+        void refreshAccounts(session.id)
+            .then(current => { if (current) { render(); } })
+            .catch(error => {
+                console.error('[Twitlike] settings could not refresh the account list', error);
+                toast('The account list could not be refreshed.', 'error');
+            });
+    };
+    const save = (patch) => { api.updateSettings(patch); refreshSettings(); };
+    const saveSession = (patch) => {
+        const updated = api.updateSession(session.id, patch);
+        if (state.session?.id === session.id) {
+            state.session = updated;
+        }
+        refreshSettings();
+    };
+    const saveProfile = patch => saveSession({
+        personaProfile: { ...(api.getSession(session.id)?.personaProfile ?? {}), ...patch },
+    });
+
+    const personaSelect = el('select', {
+        className: 'sbtw-input',
+        on: {
+            change: event => void switchSession(session.id, { personaId: event.target.value }),
+        },
+    }, personas.map(persona => el('option', {
+        text: persona.name,
+        attrs: { value: persona.entityId, selected: persona.entityId === session.personaId ? 'selected' : null },
+    })));
+
+    const groupSelect = el('select', {
+        className: 'sbtw-input',
+        on: {
+            change: (event) => {
+                const group = groups.find(item => String(item.id) === event.target.value);
+                if (group) {
+                    saveSession({ invited: [...new Set(group.members)] });
+                }
+            },
+        },
+    }, [
+        el('option', { text: 'Choose a group...', attrs: { value: '' } }),
+        ...groups.map(group => el('option', { text: group.name || 'Unnamed group', attrs: { value: String(group.id) } })),
+    ]);
 
     const profileSelect = el('select', {
         className: 'sbtw-input',
@@ -683,13 +738,13 @@ function settingsView() {
         const name = character.name || character.data?.name || character.avatar;
         const row = checkbox(
             name,
-            settings.invited.includes(character.avatar),
+            session.invited.includes(character.avatar),
             (checked) => {
-                const invited = api.getSettings().invited;
+                const invited = api.getSession(session.id).invited;
                 const next = checked
                     ? [...new Set([...invited, character.avatar])]
                     : invited.filter(item => item !== character.avatar);
-                save({ invited: next });
+                saveSession({ invited: next });
             },
             avatarNode({ kind: KIND_CHARACTER, entityId: character.avatar, name }, 'sm'),
         );
@@ -722,7 +777,7 @@ function settingsView() {
         }
         inviteEmpty.hidden = visible > 0;
         inviteEmpty.textContent = query ? 'No characters match this search.' : 'No characters are available.';
-        inviteCount.textContent = query ? `${visible} of ${inviteRows.length}` : `${settings.invited.length} invited`;
+        inviteCount.textContent = query ? `${visible} of ${inviteRows.length}` : `${session.invited.length} invited`;
     };
     let searchTimer = null;
     inviteSearch.addEventListener('input', () => {
@@ -741,7 +796,63 @@ function settingsView() {
     })));
 
     return el('div', { className: 'sbtw-settings' }, [
+        el('h3', { text: 'Timeline identity' }),
+        el('div', { className: 'sbtw-row' }, [
+            field('Timeline name', el('input', {
+                className: 'sbtw-input',
+                attrs: { type: 'text', value: session.name, maxlength: '80' },
+                on: { change: event => saveSession({ name: event.target.value }) },
+            })),
+            field('Timeline type', el('input', {
+                className: 'sbtw-input',
+                attrs: { type: 'text', value: session.type, maxlength: '120', placeholder: 'Open timeline' },
+                on: { change: event => saveSession({ type: event.target.value }) },
+            }), 'Examples: close friends, newsroom, fandom, public figures.'),
+        ]),
+        field('Persona', personaSelect, 'The selected persona owns this timeline and all activity you make in it.'),
+        notes.length ? el('div', {
+            className: 'sbtw-field',
+            attrs: { role: 'group', 'aria-labelledby': 'sbtw-scenario-notes-label' },
+        }, [
+            el('span', { className: 'sbtw-field-label', text: 'Scenario Notes', attrs: { id: 'sbtw-scenario-notes-label' } }),
+            ...notes.map(note => checkbox(note.name, session.scenarioNoteIds.includes(note.id), checked => {
+                const selected = new Set(api.getSession(session.id).scenarioNoteIds);
+                if (checked) {
+                    selected.add(note.id);
+                } else {
+                    selected.delete(note.id);
+                }
+                saveSession({ scenarioNoteIds: [...selected] });
+            })),
+            el('span', { className: 'sbtw-hint', text: 'Equipped only for this timeline; your host persona settings are not changed.' }),
+        ]) : null,
+
+        el('h3', { text: 'Persona profile' }),
+        el('div', { className: 'sbtw-row' }, [
+            field('Display name', el('input', {
+                className: 'sbtw-input',
+                attrs: { type: 'text', value: session.personaProfile.name, maxlength: '120' },
+                on: { change: event => saveProfile({ name: event.target.value }) },
+            })),
+            field('Handle', el('input', {
+                className: 'sbtw-input',
+                attrs: { type: 'text', value: session.personaProfile.handle, maxlength: '20', placeholder: 'Generated from your name' },
+                on: { change: event => saveProfile({ handle: event.target.value }) },
+            })),
+        ]),
+        field('Bio', el('textarea', {
+            className: 'sbtw-input',
+            attrs: { rows: '3', maxlength: '1000' },
+            on: { change: event => saveProfile({ bio: event.target.value }) },
+        }, [document.createTextNode(session.personaProfile.bio)])),
+        field('Location', el('input', {
+            className: 'sbtw-input',
+            attrs: { type: 'text', value: session.personaProfile.location, maxlength: '160' },
+            on: { change: event => saveProfile({ location: event.target.value }) },
+        })),
+
         el('h3', { text: 'Who posts' }),
+        groups.length ? field('Use a host group as this timeline\'s cast', groupSelect, 'This copies the group members; you can then adjust the character list below.') : null,
         // A group of checkboxes cannot live inside a single <label>; each has its own.
         el('div', { className: 'sbtw-field' }, [
             el('div', { className: 'sbtw-field-heading' }, [
@@ -752,7 +863,7 @@ function settingsView() {
             invites,
             el('span', { className: 'sbtw-hint', text: 'Only invited characters take part in a refresh.' }),
         ]),
-        checkbox('Include the ambient strangers', settings.ambient, value => save({ ambient: value })),
+        checkbox('Include the ambient strangers', session.ambient, value => saveSession({ ambient: value })),
         field('Accounts per refresh', activeMode),
         settings.active.mode === 'range'
             ? el('div', { className: 'sbtw-row' }, [
@@ -855,6 +966,105 @@ function whoToFollow() {
     ]);
 }
 
+function switchSession(sessionId, options = {}) {
+    const targetPersonaId = options.personaId || api.getSession(sessionId)?.personaId || '';
+    const changingPersona = targetPersonaId
+        && targetPersonaId !== globalThis.SillyTavern.getContext().userAvatar;
+    if (!sessionId || (!changingPersona && sessionId === state.session?.id) || sessionTask) {
+        return sessionTask ?? Promise.resolve(false);
+    }
+    const transition = ++transitionEpoch;
+    const task = (async () => {
+        try {
+            invalidateWork();
+            await closeFeedInternal(false);
+            if (transition !== transitionEpoch) {
+                return false;
+            }
+            pendingPersonaSwitch = changingPersona ? targetPersonaId : '';
+            await api.selectSession(sessionId, options);
+            if (transition !== transitionEpoch) {
+                return false;
+            }
+            const opened = await openFeedNow();
+            return transition === transitionEpoch && opened;
+        } catch (error) {
+            if (transition !== transitionEpoch) {
+                return false;
+            }
+            console.error('[Twitlike] timeline switch failed', error);
+            toast(String(error?.message ?? 'That timeline could not be opened.'), 'error');
+            return false;
+        } finally {
+            pendingPersonaSwitch = '';
+            if (sessionTask === task) {
+                sessionTask = null;
+            }
+        }
+    })();
+    sessionTask = task;
+    return task;
+}
+
+function createTimeline() {
+    if (sessionTask) {
+        return sessionTask;
+    }
+    const source = state.session;
+    const transition = ++transitionEpoch;
+    const task = (async () => {
+        try {
+            invalidateWork();
+            await closeFeedInternal(false);
+            if (transition !== transitionEpoch) {
+                return false;
+            }
+            api.createSession({
+                personaId: source?.personaId,
+                invited: source?.invited,
+                ambient: source?.ambient,
+            });
+            const opened = await openFeedNow();
+            if (transition !== transitionEpoch || !opened) {
+                return false;
+            }
+            state.view = 'settings';
+            render();
+            return true;
+        } catch (error) {
+            if (transition !== transitionEpoch) {
+                return false;
+            }
+            console.error('[Twitlike] timeline creation failed', error);
+            toast(String(error?.message ?? 'A new timeline could not be created.'), 'error');
+            return false;
+        } finally {
+            if (sessionTask === task) {
+                sessionTask = null;
+            }
+        }
+    })();
+    sessionTask = task;
+    return task;
+}
+
+function sessionBar() {
+    const personas = new Map(api.listPersonas().map(persona => [persona.entityId, persona.name]));
+    const sessions = api.listSessions();
+    const select = el('select', {
+        className: 'sbtw-input sbtw-session-select',
+        attrs: { 'aria-label': 'Timeline session' },
+        on: { change: event => void switchSession(event.target.value) },
+    }, sessions.map(session => el('option', {
+        text: `${session.name} · ${personas.get(session.personaId) ?? 'Unassigned'}`,
+        attrs: { value: session.id, selected: session.id === state.session?.id ? 'selected' : null },
+    })));
+    return el('div', { className: 'sbtw-session-bar' }, [
+        select,
+        button('New timeline', 'sbtw-btn sbtw-btn-quiet', () => { void createTimeline(); }, { iconName: 'fa-plus' }),
+    ]);
+}
+
 function render() {
     if (!state.body) {
         return;
@@ -870,13 +1080,14 @@ function render() {
         notifications: notificationsView,
         settings: settingsView,
     };
+    const sessionKey = state.session?.id ?? '';
     const scrollKey = state.view === 'timeline'
-        ? `timeline:${state.tab}`
-        : state.view === 'profile' ? `profile:${state.profileKey ?? ''}` : state.view;
+        ? `${sessionKey}:timeline:${state.tab}`
+        : state.view === 'profile' ? `${sessionKey}:profile:${state.profileKey ?? ''}` : `${sessionKey}:${state.view}`;
     const main = el('main', {
         className: 'sbtw-main',
         attrs: { 'data-scroll-key': scrollKey },
-    }, [(views[state.view] ?? timelineView)()]);
+    }, [sessionBar(), (views[state.view] ?? timelineView)()]);
     const me = personaAccount();
     const nav = el('nav', { className: 'sbtw-nav', attrs: { 'aria-label': 'Timeline sections' } }, [
         navButton('Home', 'fa-house', 'timeline'),
@@ -908,20 +1119,40 @@ function scrollToPost(postId) {
 
 // --- actions --------------------------------------------------------------
 
-async function refreshAccounts() {
-    state.accounts = await api.currentAccounts();
+async function refreshAccounts(sessionId = state.session?.id) {
+    if (!sessionId) {
+        return false;
+    }
+    const request = ++accountRequest;
+    const body = state.body;
+    const personaId = state.session?.personaId;
+    const epoch = sessionEpoch;
+    const accounts = await api.currentAccounts(sessionId);
+    if (request !== accountRequest
+        || state.body !== body
+        || state.session?.id !== sessionId
+        || state.session?.personaId !== personaId
+        || epoch !== sessionEpoch) {
+        return false;
+    }
+    state.accounts = accounts;
+    return true;
 }
 
 function publish(text) {
+    if (state.busy) {
+        return;
+    }
     const me = personaAccount();
     const body = String(text ?? '').trim();
     if (!me || (!body && !state.draft.image)) {
         return;
     }
     // A draft left over from a different persona (or before a reopen) is not mine to post.
-    if (state.draftOwner !== me.key) {
+    const owner = `${state.session.id}:${me.key}`;
+    if (state.draftOwner !== owner) {
         state.draft = { text: '', image: '', poll: null };
-        state.draftOwner = me.key;
+        state.draftOwner = owner;
     }
     const options = api.getSettings().polls
         ? (state.draft.poll ?? []).map(option => option.trim()).filter(Boolean)
@@ -950,6 +1181,9 @@ function publish(text) {
 }
 
 function addReply(post, text) {
+    if (state.busy) {
+        return;
+    }
     const me = personaAccount();
     if (!me) {
         return;
@@ -974,6 +1208,9 @@ function addReply(post, text) {
 }
 
 function toggle(post, type) {
+    if (state.busy) {
+        return;
+    }
     const me = personaAccount();
     if (!me) {
         return;
@@ -1000,6 +1237,9 @@ function toggle(post, type) {
 }
 
 function vote(post, index) {
+    if (state.busy) {
+        return;
+    }
     const me = personaAccount();
     if (!me) {
         return;
@@ -1028,9 +1268,15 @@ function vote(post, index) {
 }
 
 async function deletePost(post) {
+    if (state.busy) {
+        return;
+    }
+    const body = state.body;
+    const sessionId = state.session?.id;
+    const feed = state.feed;
     const context = globalThis.SillyTavern.getContext();
     const confirmed = await context.Popup.show.confirm('Delete this post?', 'Its replies, likes and reposts go too.');
-    if (!confirmed) {
+    if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed || state.busy) {
         return;
     }
     state.feed.posts = state.feed.posts.filter(item => item.id !== post.id);
@@ -1040,16 +1286,20 @@ async function deletePost(post) {
 }
 
 function toggleFollow(targetKey) {
+    if (state.busy) {
+        return;
+    }
     const me = personaAccount();
     if (!me) {
         return;
     }
-    const settings = api.getSettings();
-    const current = settings.follows[me.key] ?? [];
+    const current = state.session.follows[me.key] ?? [];
     const next = current.includes(targetKey)
         ? current.filter(key => key !== targetKey)
         : [...current, targetKey];
-    api.updateSettings({ follows: { ...settings.follows, [me.key]: next } });
+    state.session = api.updateSession(state.session.id, {
+        follows: { ...state.session.follows, [me.key]: next },
+    });
     render();
 }
 
@@ -1079,11 +1329,13 @@ async function refresh() {
     }
     state.busy = true;
     state.status = 'Thinking...';
+    const sessionId = state.session.id;
     const { epoch, signal } = freshSignal();
     let runs = ++refreshRuns;
     render();
     try {
         const result = await api.runRefresh({
+            sessionId,
             feed: state.feed,
             signal,
             onProgress: (message) => {
@@ -1102,7 +1354,8 @@ async function refresh() {
         if (!isLive(epoch)) {
             return;
         }
-        await refreshAccounts();
+        state.session = api.getSession(sessionId);
+        await refreshAccounts(sessionId);
         if (!isLive(epoch)) {
             return;
         }
@@ -1133,24 +1386,38 @@ async function refresh() {
 }
 
 async function resetTimeline() {
+    if (state.busy) {
+        return;
+    }
+    const body = state.body;
+    const sessionId = state.session?.id;
+    const feed = state.feed;
     const context = globalThis.SillyTavern.getContext();
     const confirmed = await context.Popup.show.confirm(
         'Reset the timeline?',
         'Posts, replies, likes, reposts and votes go. Profiles, follows and settings stay.',
     );
-    if (!confirmed) {
+    if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed || state.busy) {
         return;
     }
     // Kill any generation still running against this timeline before wiping it.
     invalidateWork();
-    state.feed.posts = [];
-    state.feed.interactions = [];
+    state.busy = true;
     try {
-        await api.writeFeed(state.feed);
+        await api.writeFeed({ version: 1, posts: [], interactions: [] }, sessionId);
     } catch (error) {
         console.error('[Twitlike] resetting the saved feed failed', error);
-        toast('The timeline is cleared here, but the saved file could not be rewritten.', 'warning');
+        toast('The saved timeline could not be reset.', 'error');
+        state.busy = false;
+        render();
+        return;
     }
+    if (state.body !== body || state.session?.id !== sessionId || state.feed !== feed) {
+        return;
+    }
+    feed.posts = [];
+    feed.interactions = [];
+    state.busy = false;
     state.view = 'timeline';
     render();
 }
@@ -1163,10 +1430,16 @@ function syncLaunchState(open) {
     launch?.setAttribute('aria-pressed', String(open));
 }
 
-export function closeFeed() {
+function closeFeedInternal(cancelTransition, allowExpectedPersonaSwitch = false) {
+    const expectedPersonaChange = allowExpectedPersonaSwitch && pendingPersonaSwitch
+        && globalThis.SillyTavern.getContext().userAvatar === pendingPersonaSwitch;
+    if (cancelTransition && !expectedPersonaChange) {
+        transitionEpoch += 1;
+    }
+    accountRequest += 1;
     const host = document.getElementById('sheld');
     if (!state.body && !openTask && !host?.hasAttribute('data-sbtw-mode')) {
-        return;
+        return closingTask;
     }
     invalidateWork();
     openTask = null;
@@ -1174,6 +1447,7 @@ export function closeFeed() {
     uploadToken += 1;
     state.body?.remove();
     state.body = null;
+    state.session = null;
     state.feed = null;
     state.accounts = [];
     state.replyingTo = null;
@@ -1187,27 +1461,74 @@ export function closeFeed() {
     scrollPositions.clear();
     host?.removeAttribute('data-sbtw-mode');
     syncLaunchState(false);
-    void api.flushFeed().catch(error => console.error('[Twitlike] final save failed', error));
+    const previous = closingTask;
+    closingTask = (async () => {
+        try {
+            await previous;
+        } catch {
+            // flushFeed below retries any snapshot retained by the failed close.
+        }
+        await api.flushFeed();
+    })();
+    void closingTask.catch(error => console.error('[Twitlike] final save failed', error));
+    return closingTask;
+}
+
+export function closeFeed({ cancelTransition = true, allowExpectedPersonaSwitch = false } = {}) {
+    return closeFeedInternal(cancelTransition, allowExpectedPersonaSwitch);
 }
 
 function handleHostNavigation(event) {
     if (event.target instanceof Element
         && event.target.closest('#sb-home-toggle, #sb_character_mode_toggle [data-sb-character-mode]')) {
         // Restore the host workspace before its own click handler decides what Home means.
-        closeFeed();
+        void closeFeed();
     }
 }
 
-function reopenFeed() {
-    closeFeed();
-    return openFeed();
+async function reopenFeed() {
+    try {
+        await closeFeed();
+        return await openFeed();
+    } catch (error) {
+        console.error('[Twitlike] reopening after the final save failed', error);
+        toast('The timeline could not be reopened because its latest changes are not saved yet.', 'error');
+    }
 }
 
-/** Rapid double-clicks share one load instead of building two workspaces over one state. */
-export function openFeed() {
+async function waitForClosing() {
+    let retried = false;
+    while (true) {
+        const pending = closingTask;
+        try {
+            await pending;
+        } catch (error) {
+            if (pending !== closingTask) {
+                continue;
+            }
+            if (retried) {
+                throw error;
+            }
+            retried = true;
+            closingTask = api.flushFeed();
+            void closingTask.catch(saveError => console.error('[Twitlike] final save retry failed', saveError));
+            continue;
+        }
+        if (pending === closingTask) {
+            return;
+        }
+    }
+}
+
+async function openFeedNow() {
+    const transition = transitionEpoch;
+    await waitForClosing();
+    if (transition !== transitionEpoch) {
+        return false;
+    }
     if (state.body?.isConnected) {
         document.getElementById('sb_character_shell_close')?.click();
-        return Promise.resolve();
+        return true;
     }
     if (openTask) {
         return openTask;
@@ -1221,26 +1542,53 @@ export function openFeed() {
     });
 }
 
+/** Rapid double-clicks share one load instead of building two workspaces over one state. */
+export function openFeed() {
+    if (sessionTask) {
+        return sessionTask;
+    }
+    return openFeedNow().catch(error => {
+        console.error('[Twitlike] opening after the final save failed', error);
+        toast('The timeline cannot open until its latest changes are saved.', 'error');
+        return false;
+    });
+}
+
 async function startFeed() {
     const host = document.getElementById('sheld');
     if (!host) {
         toast('The chat workspace is not available yet.', 'warning');
-        return;
+        return false;
     }
     invalidateWork();
     const openingEpoch = sessionEpoch;
+    let session = null;
     let feed = null;
     let accounts = [];
     let failure = null;
     try {
-        feed = await api.loadFeed();
-        accounts = await api.currentAccounts();
+        session = api.ensureActiveSession();
     } catch (error) {
-        failure = error;
+        failure = { kind: 'session', error };
+    }
+    if (!failure) {
+        try {
+            feed = await api.loadFeed(session.id);
+        } catch (error) {
+            failure = { kind: 'feed', error };
+        }
+    }
+    if (!failure) {
+        try {
+            accounts = await api.currentAccounts(session.id);
+        } catch (error) {
+            failure = { kind: 'accounts', error };
+        }
     }
     if (openingEpoch !== sessionEpoch) {
-        return;
+        return false;
     }
+    state.session = session;
     state.feed = feed;
     state.accounts = accounts;
     state.view = 'timeline';
@@ -1248,7 +1596,8 @@ async function startFeed() {
     state.profileKey = null;
     state.replyingTo = null;
     state.draft = { text: '', image: '', poll: null };
-    state.draftOwner = null;
+    const owner = accounts.find(account => account.kind === KIND_PERSONA);
+    state.draftOwner = session && owner ? `${session.id}:${owner.key}` : null;
     replyDrafts.clear();
     pendingReplyFocus = null;
     scrollPositions.clear();
@@ -1259,42 +1608,48 @@ async function startFeed() {
     });
     state.body = body;
     window.dispatchEvent(new CustomEvent('sb:close-conversation-workspace'));
+    // Conversation Mode also force-closes this panel and does not reopen it on exit.
+    document.querySelector('#ica--tracker-panel [data-action="panel-close"]')?.click();
     host.dataset.sbtwMode = 'on';
     host.append(body);
     syncLaunchState(true);
     document.getElementById('sb_character_shell_close')?.click();
 
     if (failure) {
-        // Fail closed with a way out - never an editable-looking empty timeline.
-        console.error('[Twitlike] the saved timeline could not be opened', failure);
+        const feedFailure = failure.kind === 'feed';
+        console.error(`[Twitlike] the timeline ${failure.kind} could not be loaded`, failure.error);
         body.append(
-            el('h3', { text: 'The saved timeline could not be read' }),
-            el('p', { className: 'sbtw-hint', text: String(failure?.message ?? failure) }),
+            session ? sessionBar() : null,
+            el('h3', { text: feedFailure ? 'The saved timeline could not be read' : 'The timeline could not be opened' }),
+            el('p', { className: 'sbtw-hint', text: String(failure.error?.message ?? failure.error) }),
             el('div', { className: 'sbtw-composer-bar' }, [
                 button('Try again', 'sbtw-btn sbtw-btn-primary', () => reopenFeed()),
-                button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetFailedTimeline()),
+                feedFailure ? button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetFailedTimeline()) : null,
             ]),
         );
+        return false;
     } else {
         render();
-        if (needsCatchUp(api.getSettings())) {
+        if (needsCatchUp(api.getSettings(), Date.now(), state.session)) {
             void refresh();
         }
+        return true;
     }
 }
 
 async function resetFailedTimeline() {
     const body = state.body;
+    const sessionId = state.session?.id;
     const context = globalThis.SillyTavern.getContext();
     const confirmed = await context.Popup.show.confirm(
         'Start a new timeline?',
         'The saved file will be overwritten with an empty timeline. This cannot be undone.',
     );
-    if (!confirmed) {
+    if (!confirmed || !sessionId || state.body !== body || state.session?.id !== sessionId) {
         return;
     }
     try {
-        await api.writeFeed({ version: 1, posts: [], interactions: [] });
+        await api.writeFeed({ version: 1, posts: [], interactions: [] }, sessionId);
     } catch (error) {
         console.error('[Twitlike] resetting the saved feed failed', error);
         // Say why: a reset that keeps failing silently looks like a reset that does nothing.
@@ -1302,7 +1657,7 @@ async function resetFailedTimeline() {
         return;
     }
     if (state.body === body) {
-        reopenFeed();
+        await reopenFeed();
     }
 }
 
@@ -1412,7 +1767,7 @@ export function mountAll() {
 
 export function unmountAll() {
     document.removeEventListener('click', handleHostNavigation, true);
-    closeFeed();
+    void closeFeed();
     document.body.classList.remove(BODY_CLASS);
     for (const node of owned) {
         node.remove();

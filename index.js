@@ -1,13 +1,21 @@
 // Boot and teardown only. Host I/O lives in src/api.js, DOM in src/ui.js, logic in src/core.js.
 
-import { applyCarryover, flushFeed, loadFeed } from './src/api.js';
+import { applyCarryover, clearCarryover, ensureActiveSession, flushFeed, getSettings, loadFeed } from './src/api.js';
 import { closeFeed, mountAll, unmountAll } from './src/ui.js';
 
 let active = false;
+let carryoverEpoch = 0;
 const subscriptions = [];
 
 function ctx() {
     return globalThis.SillyTavern.getContext();
+}
+
+function contextIdentity(sessionId) {
+    const context = ctx();
+    return [sessionId, getSettings().activeSessionId, context.userAvatar, context.chatId, context.characterId, context.groupId]
+        .map(value => String(value ?? ''))
+        .join('\u0000');
 }
 
 function subscribe(eventType, handler) {
@@ -30,10 +38,46 @@ function unsubscribeAll() {
  * has nothing to say, so a disabled or empty feed never leaves a stale block in the prompt.
  */
 async function syncCarryover() {
+    if (!active) {
+        return;
+    }
+    const epoch = ++carryoverEpoch;
+    let sessionId = '';
+    let identity = contextIdentity(sessionId);
+    const isCurrent = () => active
+        && epoch === carryoverEpoch
+        && identity === contextIdentity(sessionId);
     try {
-        await applyCarryover(await loadFeed());
+        const session = ensureActiveSession();
+        sessionId = session.id;
+        identity = contextIdentity(sessionId);
+        await flushFeed(sessionId);
+        if (!isCurrent()) {
+            return;
+        }
+        const feed = await loadFeed(sessionId);
+        await applyCarryover(feed, sessionId, { isCurrent });
     } catch (error) {
-        console.error('[Twitlike] could not build the carryover block', error);
+        if (isCurrent()) {
+            clearCarryover();
+            console.error('[Twitlike] could not build the carryover block', error);
+        }
+    }
+}
+
+async function closeAndSyncCarryover(closeOptions) {
+    if (!active) {
+        return;
+    }
+    try {
+        await closeFeed(closeOptions);
+    } catch (error) {
+        clearCarryover();
+        console.error('[Twitlike] could not save the timeline before changing context', error);
+        return;
+    }
+    if (active) {
+        await syncCarryover();
     }
 }
 
@@ -48,10 +92,9 @@ function start() {
 
     try {
         subscribe(context.eventTypes.APP_READY, () => mountAll());
-        subscribe(context.eventTypes.CHAT_CHANGED, () => {
-            closeFeed();
-            syncCarryover();
-        });
+        subscribe(context.eventTypes.CHAT_CHANGED, () => closeAndSyncCarryover());
+        subscribe(context.eventTypes.PERSONA_CHANGED, () => closeAndSyncCarryover({ allowExpectedPersonaSwitch: true }));
+        subscribe(context.eventTypes.PERSONA_UPDATED, () => syncCarryover());
         subscribe(context.eventTypes.GENERATION_AFTER_COMMANDS, () => syncCarryover());
 
         // APP_READY is sticky in the host, but enabling after load still needs a direct mount.
@@ -71,6 +114,7 @@ function stop() {
         return;
     }
     active = false;
+    carryoverEpoch += 1;
     try {
         unsubscribeAll();
         ctx().setExtensionPrompt('SillyBunny-TwitterLike', '', 1, 1, false, 0);
