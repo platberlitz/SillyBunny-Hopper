@@ -398,8 +398,9 @@ function replyNode(reply) {
     const handle = handleFor(reply.actorKey, reply.actorSnapshot);
     const targeted = isReplyTarget(reply.postId, reply.id);
     return el('div', { className: 'sbtw-reply', attrs: { 'data-kind': reply.actorSnapshot?.kind ?? '' } }, [
-        avatarNode(account, 'sm'),
-        el('div', { className: 'sbtw-reply-main' }, [
+        // The avatar shares a row with the name block so it stays centred on it even when the time wraps.
+        el('div', { className: 'sbtw-reply-head' }, [
+            avatarNode(account, 'sm'),
             el('div', { className: 'sbtw-meta' }, [
                 el('button', {
                     className: 'sbtw-name',
@@ -410,6 +411,8 @@ function replyNode(reply) {
                 el('span', { className: 'sbtw-handle', text: `@${handle}` }),
                 el('span', { className: 'sbtw-time', text: dateFormat.format(new Date(reply.createdAt)) }),
             ]),
+        ]),
+        el('div', { className: 'sbtw-reply-main' }, [
             parent
                 ? el('div', {
                     className: 'sbtw-replying',
@@ -650,7 +653,7 @@ function composerBar(canPost, postField = null) {
             text: state.status,
             attrs: { role: 'status', 'aria-live': 'polite' },
         }),
-        canPost ? button('Post', 'sbtw-btn sbtw-btn-primary', () => publish(postField.value)) : null,
+        canPost ? button('Post', 'sbtw-btn sbtw-btn-primary sbtw-post-button', () => publish(postField.value)) : null,
     ]);
 }
 

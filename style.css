@@ -383,8 +383,14 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 .sbtw-post-main {
+    position: relative;
     flex: 1;
     min-width: 0;
+}
+
+/* Room for the corner button so the name row never runs under it. */
+.sbtw-post .sbtw-meta:has(> .sbtw-delete) {
+    padding-right: 2rem;
 }
 
 .sbtw-meta {
@@ -440,7 +446,9 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 .sbtw-delete {
-    margin-left: auto;
+    position: absolute;
+    top: 0;
+    right: 0;
     border: none;
     background: transparent;
     color: var(--sbtw-muted);
@@ -530,12 +538,25 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 
 .sbtw-reply {
     display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.sbtw-reply-head {
+    display: flex;
+    align-items: center;
     gap: 0.5rem;
 }
 
-.sbtw-reply-main {
+.sbtw-reply-head .sbtw-meta {
     flex: 1;
     min-width: 0;
+}
+
+/* Indented past the avatar column (2rem) and the head gap, so the text lines up under the name. */
+.sbtw-reply-main {
+    min-width: 0;
+    padding-left: 2.5rem;
 }
 
 .sbtw-reply-actions {
@@ -603,11 +624,29 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     align-items: center;
     gap: 0.5rem;
     margin-top: 0.5rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    container-type: inline-size;
+}
+
+.sbtw-composer-bar .sbtw-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* Narrow bar: buttons that have an icon go icon-only; Post and Reply keep their labels. */
+@container (width < 32em) {
+    .sbtw-composer-bar .sbtw-btn:has(> i) span {
+        display: none;
+    }
+
+    .sbtw-composer-bar .sbtw-btn:has(> i) {
+        padding-inline: 0.7rem;
+    }
 }
 
 .sbtw-spacer {
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
 }
 
 .sbtw-attachment img,
@@ -735,6 +774,11 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 .sbtw-status {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--sbtw-muted);
     font-size: 0.85em;
 }
@@ -824,9 +868,6 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 /* --- settings ----------------------------------------------------------- */
 
 .sbtw-session-bar {
-    position: sticky;
-    top: 0;
-    z-index: 3;
     display: flex;
     align-items: center;
     gap: 0.5rem;
