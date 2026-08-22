@@ -1,7 +1,7 @@
 // Boot and teardown only. Host I/O lives in src/api.js, DOM in src/ui.js, logic in src/core.js.
 
 import { applyCarryover, flushFeed, loadFeed } from './src/api.js';
-import { mountAll, unmountAll } from './src/ui.js';
+import { closeFeed, mountAll, unmountAll } from './src/ui.js';
 
 let active = false;
 const subscriptions = [];
@@ -48,7 +48,10 @@ function start() {
 
     try {
         subscribe(context.eventTypes.APP_READY, () => mountAll());
-        subscribe(context.eventTypes.CHAT_CHANGED, () => { syncCarryover(); });
+        subscribe(context.eventTypes.CHAT_CHANGED, () => {
+            closeFeed();
+            syncCarryover();
+        });
         subscribe(context.eventTypes.GENERATION_AFTER_COMMANDS, () => syncCarryover());
 
         // APP_READY is sticky in the host, but enabling after load still needs a direct mount.

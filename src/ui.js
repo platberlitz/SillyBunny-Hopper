@@ -19,6 +19,7 @@ const WAND_ID = 'sbtw-wand-button';
 const DRAWER_ID = 'sbtw-drawer';
 const EXTENSION_NAME = 'SillyBunny-Twitlike';
 const FEED_LIMIT = 160;
+const SEARCH_DEBOUNCE_MS = 150;
 
 const state = {
     body: null,
@@ -711,17 +712,24 @@ function settingsView() {
     });
     const filterInvites = () => {
         const query = inviteSearch.value.trim().toLocaleLowerCase();
-        state.characterSearch = inviteSearch.value;
         let visible = 0;
         for (const row of inviteRows) {
-            row.hidden = Boolean(query) && !row.dataset.search.includes(query);
-            visible += row.hidden ? 0 : 1;
+            const hidden = Boolean(query) && !row.dataset.search.includes(query);
+            if (row.hidden !== hidden) {
+                row.hidden = hidden;
+            }
+            visible += hidden ? 0 : 1;
         }
         inviteEmpty.hidden = visible > 0;
         inviteEmpty.textContent = query ? 'No characters match this search.' : 'No characters are available.';
         inviteCount.textContent = query ? `${visible} of ${inviteRows.length}` : `${settings.invited.length} invited`;
     };
-    inviteSearch.addEventListener('input', filterInvites);
+    let searchTimer = null;
+    inviteSearch.addEventListener('input', () => {
+        state.characterSearch = inviteSearch.value;
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(filterInvites, SEARCH_DEBOUNCE_MS);
+    });
     filterInvites();
 
     const activeMode = el('select', {
@@ -1155,7 +1163,7 @@ function syncLaunchState(open) {
     launch?.setAttribute('aria-pressed', String(open));
 }
 
-function closeFeed() {
+export function closeFeed() {
     const host = document.getElementById('sheld');
     if (!state.body && !openTask && !host?.hasAttribute('data-sbtw-mode')) {
         return;
