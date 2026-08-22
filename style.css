@@ -135,7 +135,11 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 
 .sbtw-shell {
     display: grid;
-    grid-template-columns: 13rem minmax(0, 42rem) 17rem;
+    grid-template-columns: minmax(0, 42rem) 17rem;
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+        'nav nav'
+        'main rail';
     justify-content: center;
     gap: var(--sbtw-gap);
     align-items: stretch;
@@ -166,8 +170,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     display: none !important;
 }
 
-/* Each column scrolls on its own, the way the real thing does. */
-.sbtw-nav,
+/* Content columns scroll independently under the fixed section navigation. */
 .sbtw-main,
 .sbtw-rail {
     height: 100%;
@@ -176,15 +179,30 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     overscroll-behavior: contain;
 }
 
-/* The three columns total ~72rem plus gaps, so collapse before ~1200px or they clip. */
+/* Drop the suggestion rail before the two content columns would clip. */
 @media (max-width: 1200px) {
     .sbtw-shell {
-        grid-template-columns: 3.5rem minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            'nav'
+            'main';
         justify-content: stretch;
     }
 
     .sbtw-shell .sbtw-rail {
         display: none;
+    }
+}
+
+@media (max-width: 620px) {
+    .sbtw-shell .sbtw-nav {
+        justify-content: space-around;
+    }
+
+    .sbtw-shell .sbtw-nav-item {
+        flex: 1;
+        justify-content: center;
+        padding-inline: 0.5rem;
     }
 
     .sbtw-shell .sbtw-nav-item span {
@@ -192,33 +210,28 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     }
 }
 
-@media (max-width: 620px) {
-    .sbtw-shell {
-        grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: auto minmax(0, 1fr);
-        justify-content: stretch;
-    }
-
-    .sbtw-shell .sbtw-nav {
-        height: auto;
-        overflow: visible;
-        flex-direction: row;
-        justify-content: space-around;
-        padding-right: 0;
-        border-right: none;
-        border-bottom: 1px solid var(--sbtw-divider);
-    }
-}
-
 /* --- navigation --------------------------------------------------------- */
 
 .sbtw-nav {
+    grid-area: nav;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
+    justify-content: center;
     gap: 0.25rem;
-    padding-right: var(--sbtw-gap);
-    border-right: 1px solid var(--sbtw-divider);
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--sbtw-divider);
     background: var(--sbtw-nav-surface);
+}
+
+.sbtw-main {
+    grid-area: main;
+}
+
+.sbtw-rail {
+    grid-area: rail;
 }
 
 .sbtw-nav-item {

@@ -935,7 +935,7 @@ function settingsView() {
 function navButton(label, iconName, view) {
     return el('button', {
         className: `sbtw-nav-item${state.view === view ? ' sbtw-nav-on' : ''}`,
-        // The label span is hidden below 1100px, so the name must live on the button.
+        // Mobile hides the label span, so the name must live on the button too.
         attrs: { type: 'button', 'aria-label': label, 'aria-current': state.view === view ? 'page' : null },
         on: { click: () => { state.view = view; if (view !== 'profile') { state.profileKey = null; } render(); } },
     }, [icon(iconName), el('span', { text: label })]);
