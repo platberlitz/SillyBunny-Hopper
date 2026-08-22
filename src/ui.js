@@ -15,6 +15,8 @@ import {
     insertMention,
     matchMentionAccounts,
     mentionQueryAt,
+    RECENT_WINDOW_HOURS,
+    engagementScore,
 } from './core.js';
 import * as api from './api.js';
 
@@ -32,6 +34,8 @@ const state = {
     accounts: [],
     view: 'timeline',
     tab: 'main',
+    /** `${postId}:like` or `${postId}:repost` while a who-did-this list is open. */
+    engagementFor: null,
     profileKey: null,
     replyingTo: null,
     status: '',
@@ -240,6 +244,19 @@ function visibleTimelineEntries(query = state.timelineSearch) {
         || following.has(post.authorKey)
         || repost);
 
+    // Trending: the most talked-about posts of the last two days, most engaged first.
+    if (state.tab === 'trending') {
+        const since = Date.now() - RECENT_WINDOW_HOURS * 3600 * 1000;
+        for (const entry of entries) {
+            entry.score = engagementScore(statsFor(entry.post.id));
+        }
+        const trending = entries
+            .filter(entry => entry.score > 0 && entry.sortAt >= since)
+            .filter(({ post }) => matchesTimelineQuery(post, interactionsFor(post.id), query))
+            .sort((a, b) => (b.score - a.score) || (b.sortAt - a.sortAt));
+        return { entries: trending.slice(0, FEED_LIMIT), total: trending.length };
+    }
+
     const matches = entries
         .filter(({ post }) => matchesTimelineQuery(post, interactionsFor(post.id), query))
         .sort((a, b) => b.sortAt - a.sortAt);
@@ -376,16 +393,64 @@ function actionsNode(post) {
     const reposted = Boolean(myInteraction(post.id, 'repost'));
     const replies = countOf(post.id, 'reply');
 
-    const action = (iconName, count, active, onClick, label) => el('button', {
-        className: `sbtw-action${active ? ' sbtw-action-on' : ''}`,
-        attrs: { type: 'button', title: label, 'aria-label': label, 'aria-pressed': String(active), disabled: !me },
-        on: { click: onClick },
-    }, [icon(iconName), el('span', { className: 'sbtw-action-count', text: count > 0 ? String(count) : '' })]);
+    const action = (iconName, count, active, onClick, label, who = null) => {
+        const button = el('button', {
+            className: `sbtw-action${active ? ' sbtw-action-on' : ''}`,
+            attrs: { type: 'button', title: label, 'aria-label': label, 'aria-pressed': String(active), disabled: !me },
+            on: { click: onClick },
+        }, [icon(iconName)]);
+        if (!(count > 0)) {
+            return button;
+        }
+        if (!who) {
+            button.append(el('span', { className: 'sbtw-action-count', text: String(count) }));
+            return button;
+        }
+        // The count is its own button: tap it to see who did this, without toggling your own like.
+        const key = `${post.id}:${who}`;
+        const open = state.engagementFor === key;
+        const countButton = el('button', {
+            className: `sbtw-action-count sbtw-action-who${open ? ' sbtw-action-who-on' : ''}`,
+            text: String(count),
+            attrs: { type: 'button', title: who === 'like' ? 'See who liked this' : 'See who reposted this', 'aria-label': `${count} ${who === 'like' ? 'likes' : 'reposts'}, see who`, 'aria-expanded': String(open) },
+            on: { click: () => { state.engagementFor = open ? null : key; render(); } },
+        });
+        return el('span', { className: 'sbtw-action-group' }, [button, countButton]);
+    };
 
     return el('div', { className: 'sbtw-actions' }, [
-        action('fa-heart', countOf(post.id, 'like'), liked, () => toggle(post, 'like'), liked ? 'Unlike' : 'Like'),
-        action('fa-retweet', countOf(post.id, 'repost'), reposted, () => toggle(post, 'repost'), reposted ? 'Undo repost' : 'Repost'),
+        action('fa-heart', countOf(post.id, 'like'), liked, () => toggle(post, 'like'), liked ? 'Unlike' : 'Like', 'like'),
+        action('fa-retweet', countOf(post.id, 'repost'), reposted, () => toggle(post, 'repost'), reposted ? 'Undo repost' : 'Repost', 'repost'),
         action('fa-comment', replies, isReplyTarget(post.id), () => setReplyTarget(post.id), 'Reply'),
+    ]);
+}
+
+/** Who liked or reposted a post, shown under its actions while the count is open. */
+function engagementNode(post) {
+    const key = String(state.engagementFor ?? '');
+    if (!key.startsWith(`${post.id}:`)) {
+        return null;
+    }
+    const type = key.slice(post.id.length + 1);
+    const items = interactionsFor(post.id)
+        .filter(item => item.type === type)
+        .sort((a, b) => b.createdAt - a.createdAt);
+    const title = type === 'like' ? 'Liked by' : 'Reposted by';
+    return el('div', { className: 'sbtw-engagement', attrs: { role: 'region', 'aria-label': title } }, [
+        el('div', { className: 'sbtw-engagement-title', text: title }),
+        ...(items.length ? items.map((item) => {
+            const account = accountFor(item.actorKey) ?? item.actorSnapshot ?? null;
+            return el('div', { className: 'sbtw-engagement-row' }, [
+                avatarNode(account, 'sm'),
+                el('button', {
+                    className: 'sbtw-name',
+                    text: nameFor(item.actorKey, item.actorSnapshot),
+                    attrs: { type: 'button' },
+                    on: { click: () => showProfile(item.actorKey) },
+                }),
+                el('span', { className: 'sbtw-handle', text: `@${handleFor(item.actorKey, item.actorSnapshot)}` }),
+            ]);
+        }) : [el('div', { className: 'sbtw-hint', text: 'Nobody yet.' })]),
     ]);
 }
 
@@ -475,6 +540,7 @@ function postNode(post, repost = null) {
                 pollNode(post),
                 imageNode(post),
                 actionsNode(post),
+                engagementNode(post),
                 state.replyingTo?.postId === post.id ? replyComposer(post) : null,
                 replies.length ? el('div', { className: 'sbtw-replies' }, replies.map(replyNode)) : null,
             ]),
@@ -715,6 +781,7 @@ function timelineView() {
     const tabs = el('div', { className: 'sbtw-tabs' }, [
         tabButton('Main', 'main'),
         tabButton('Following', 'following'),
+        tabButton('Trending', 'trending'),
     ]);
     const results = el('div', { className: 'sbtw-timeline-results' });
     const resultStatus = el('span', {
@@ -746,7 +813,8 @@ function timelineView() {
             el('p', {
                 text: query
                     ? 'No posts or replies match that search.'
-                    : state.tab === 'following' ? 'Nothing from anyone you follow yet.' : 'Nothing here yet.',
+                    : state.tab === 'following' ? 'Nothing from anyone you follow yet.'
+                        : state.tab === 'trending' ? 'Nothing is trending yet.' : 'Nothing here yet.',
             }),
             el('p', {
                 className: 'sbtw-hint',
@@ -754,7 +822,9 @@ function timelineView() {
                     ? 'Try a name, handle, post, reply or poll option.'
                     : state.tab === 'following'
                         ? 'Follow someone from their profile, or from Who to follow.'
-                        : 'Invite a character in Settings, then hit Refresh.',
+                        : state.tab === 'trending'
+                            ? 'Posts with the most likes, replies and reposts from the last two days show up here.'
+                            : 'Invite a character in Settings, then hit Refresh.',
             }),
         ]));
     };

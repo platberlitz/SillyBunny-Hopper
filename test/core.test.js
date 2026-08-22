@@ -31,6 +31,7 @@ import {
     normalizeStrangers,
     normalizeSession,
     buildTurnInstruction,
+    engagementScore,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -837,5 +838,11 @@ test('a rolling-refresh turn adds one instruction message naming the author and 
     assert.match(buildTurnInstruction({ index: 1, total: 1, author: null }), /as a stranger/);
     assert.equal(normalizeSettings({ incremental: true }).incremental, true);
     assert.equal(normalizeSettings({}).incremental, false);
+});
+
+test('engagementScore weighs replies and reposts twice a like', () => {
+    assert.equal(engagementScore({ like: 3, reply: 2, repost: 1, vote: 1 }), 10);
+    assert.equal(engagementScore({}), 0);
+    assert.equal(engagementScore({ like: 'x' }), 0);
 });
 

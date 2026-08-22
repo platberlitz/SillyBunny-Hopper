@@ -27,7 +27,8 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 - Posting by hand, with one picture from disk and a poll of two to four options; **Refresh** lives in the same button row.
 - Like, repost and reply on every post; reply to a specific comment; delete your own replies and posts.
 - `@` in a composer lists the accounts the session knows (persona, invited characters, strangers); arrows move, Enter or Tab inserts the handle.
-- **Main** is everything; **Following** is the accounts the persona follows, their posts and reposts with an attribution line. A search box filters the current timeline by text, author, handle, poll text or reply text.
+- **Main** is everything; **Following** is the accounts the persona follows, their posts and reposts with an attribution line; **Trending** is the most talked-about posts of the last two days, most engaged first. A search box filters the current timeline by text, author, handle, poll text or reply text.
+- Tap a like or repost count to see who did it, with a link to each profile.
 - Profiles with Posts, Reposts, Likes and Media sections, and follow/unfollow from any profile.
 - Optional **carryover**: recent activity dropped into a chat's prompt, so a character can refer to the argument they had on the timeline this morning. Off by default.
 - Optional pictures through the existing image generation, an optional catch-up refresh on open, and a tone text that is the only editable part of the prompt.
@@ -40,7 +41,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 **Posting.** Write in the box at the top. **Image** attaches one picture, **Poll** adds two to four options. Type `@` to pick an account to mention; the handle is inserted as `@handle`. Post text is never rendered as HTML: it is inserted as text with `@handles` turned into links, and no markdown, which is also how the real thing works.
 
-**Replying.** Every post has like, repost and reply; every reply has its own reply button, so one comment can be answered rather than the whole post. Replies show underneath with a 'Replying to @someone' line instead of nesting forever, which is deliberate: nested threads look clever and read badly.
+**Replying.** Every post has like, repost and reply; every reply has its own reply button, so one comment can be answered rather than the whole post. The number next to the heart or the repost arrows opens the list of who liked or reposted, with a link to each profile. Replies show underneath with a 'Replying to @someone' line instead of nesting forever, which is deliberate: nested threads look clever and read badly.
 
 **Profiles.** Click any name. Follow or unfollow from there.
 

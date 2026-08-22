@@ -396,17 +396,25 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 .sbtw-meta {
     display: flex;
     align-items: baseline;
-    gap: 0.4rem;
+    column-gap: 0.4rem;
+    /* When the date wraps to its own line it sits right under the name, not a row-gap below it. */
+    row-gap: 0;
     flex-wrap: wrap;
 }
 
 .sbtw-name {
+    display: inline;
+    min-height: 0;
+    height: auto;
+    margin: 0;
     padding: 0;
     border: none;
     background: transparent;
     color: inherit;
     font-weight: 700;
     font-size: 1em;
+    line-height: inherit;
+    vertical-align: baseline;
     cursor: pointer;
 }
 
@@ -436,13 +444,65 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     margin: 0.25rem 0;
 }
 
+/* Inline like the text around it: the host's 44px touch-target minimum for buttons would
+   otherwise make every line that carries a mention taller than its neighbours. */
 .sbtw-mention {
+    display: inline;
+    min-height: 0;
+    height: auto;
+    margin: 0;
     padding: 0;
     border: none;
     background: transparent;
     color: var(--sbtw-accent);
     font: inherit;
+    line-height: inherit;
+    vertical-align: baseline;
     cursor: pointer;
+}
+
+.sbtw-action-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+}
+
+.sbtw-action-who {
+    min-height: 0;
+    padding: 0.3rem 0.3rem;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--sbtw-muted);
+    font: inherit;
+    cursor: pointer;
+}
+
+.sbtw-action-who:hover,
+.sbtw-action-who:focus-visible,
+.sbtw-action-who-on {
+    color: var(--sbtw-text);
+    text-decoration: underline;
+}
+
+.sbtw-engagement {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--sbtw-divider);
+    border-radius: var(--sb-radius-sm, 10px);
+}
+
+.sbtw-engagement-title {
+    font-size: 0.85em;
+    color: var(--sbtw-muted);
+    margin-bottom: 0.35rem;
+}
+
+.sbtw-engagement-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.2rem 0;
 }
 
 .sbtw-delete {

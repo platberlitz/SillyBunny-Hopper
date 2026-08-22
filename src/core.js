@@ -1241,3 +1241,10 @@ export function insertMention(text, start, caret, handle) {
     return { text: next, caret: start + insert.length };
 }
 
+// --- trending ---------------------------------------------------------------
+
+/** Replies and reposts weigh twice a like; a poll vote counts like a like. */
+export function engagementScore({ like = 0, reply = 0, repost = 0, vote = 0 } = {}) {
+    return (Number(like) || 0) + 2 * (Number(reply) || 0) + 2 * (Number(repost) || 0) + (Number(vote) || 0);
+}
+
