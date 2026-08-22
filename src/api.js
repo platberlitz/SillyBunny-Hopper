@@ -209,7 +209,7 @@ export async function selectSession(sessionId, { personaId = null } = {}) {
                 });
                 throw new Error(`The host could not switch to that persona (${error.message}).`);
             }
-            console.warn('[Twitlike] the host switched persona but a listener reported an error', error);
+            console.warn('[Hopper] the host switched persona but a listener reported an error', error);
         }
     }
     return getSession(sessionId);
@@ -447,7 +447,7 @@ export async function loadFeed(sessionId = ensureActiveSession().id) {
         // body itself is the only thing that says what actually went wrong.
         text = await response.text();
     } catch (error) {
-        console.error('[Twitlike] the saved timeline could not be fetched', url, error);
+        console.error('[Hopper] the saved timeline could not be fetched', url, error);
         throw new Error(`The saved timeline could not be read from ${path} (${error.message}). Try again, or reset the timeline to start over.`);
     }
     // An interrupted or failed write leaves an empty file behind. There is no history in
@@ -462,7 +462,7 @@ export async function loadFeed(sessionId = ensureActiveSession().id) {
         raw = parseJson(fromBase64(text));
     }
     if (!isObj(raw) || !Array.isArray(raw.posts) || !Array.isArray(raw.interactions)) {
-        console.error('[Twitlike] the saved timeline is not a timeline file', url, text.slice(0, 300));
+        console.error('[Hopper] the saved timeline is not a timeline file', url, text.slice(0, 300));
         throw new Error(`The file at ${path} is not a timeline - it starts with "${text.trim().slice(0, 40)}". If that looks like a web page, the server did not hand back the saved file.`);
     }
     return normalizeFeed(raw);
@@ -490,7 +490,7 @@ async function readJson(response, what) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (parsed === null) {
-        console.error(`[Twitlike] ${what} did not answer with JSON`, response.url, text.slice(0, 300));
+        console.error(`[Hopper] ${what} did not answer with JSON`, response.url, text.slice(0, 300));
         throw new Error(`${what} answered with "${text.trim().slice(0, 40)}" instead of data. Is this SillyBunny tab still signed in?`);
     }
     return parsed;
@@ -618,7 +618,7 @@ function enqueueSave(sessionId) {
     }
     const attempt = state.chain.then(() => uploadFeed(pending.feed, sessionId));
     state.chain = attempt.then(() => {}, error => {
-        console.error('[Twitlike] feed save failed', error);
+        console.error('[Hopper] feed save failed', error);
         // A failed old upload must never come back from the dead after a newer revision.
         if (state.latestRevision === pending.revision && !state.pending) {
             state.pending = pending;
@@ -733,7 +733,7 @@ async function generateProfilesFor(accounts, allAccounts, signal) {
     try {
         return parseProfileResponse(raw, accounts, others);
     } catch (error) {
-        console.warn('[Twitlike] profile generation returned unusable JSON', error);
+        console.warn('[Hopper] profile generation returned unusable JSON', error);
         return {};
     }
 }
@@ -754,7 +754,7 @@ export async function generatePostImage(prompt, signal) {
         );
         return typeof result?.pipe === 'string' ? result.pipe : '';
     } catch (error) {
-        console.warn('[Twitlike] image generation failed, publishing text only', error);
+        console.warn('[Hopper] image generation failed, publishing text only', error);
         return '';
     }
 }

@@ -10,7 +10,7 @@ SillyBunny roleplayers managing a personal cast of characters, primarily during 
 
 ## Product Purpose
 
-Twitlike creates a private, fictional social timeline for the user's persona and invited characters. Success means the cast is quick to curate, generated activity stays recognizably in character, and timeline events can enrich chats without pretending anything was posted publicly.
+Hopper creates a private, fictional social timeline for the user's persona and invited characters. Success means the cast is quick to curate, generated activity stays recognizably in character, and timeline events can enrich chats without pretending anything was posted publicly.
 
 ## Brand Personality
 

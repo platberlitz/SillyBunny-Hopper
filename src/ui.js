@@ -110,6 +110,25 @@ function icon(name) {
     return el('i', { className: `fa-solid ${name}`, attrs: { 'aria-hidden': 'true' } });
 }
 
+/** The SillyBunny bunny (the same mark as the Terminal UI), sized and coloured like a Font Awesome icon. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const BUNNY_PATH = 'M30 40C28 26 27 12 33 9C39 6 42 20 42 34C44 33 52 33 54 34C54 20 57 6 63 9C69 12 68 26 66 40C74 46 78 54 78 63C78 78 65 88 48 88C31 88 18 78 18 63C18 54 22 46 30 40ZM34 15C32 22 32 29 35 33C38 29 38 20 37 14C36 12 35 13 34 15ZM59 14C58 20 58 29 61 33C64 29 64 22 62 15C61 13 60 12 59 14ZM34 60a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0-9 0M53 60a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0-9 0M45 69l6 0l-3 4.5z';
+
+function bunnyIcon(className = '') {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 96 96');
+    svg.setAttribute('fill', 'currentColor');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('fill-rule', 'evenodd');
+    path.setAttribute('d', BUNNY_PATH);
+    svg.append(path);
+    // An <i>, like a Font Awesome glyph: the host hides <span> labels in icon-only modes, not icons.
+    const node = el('i', { className: `sbtw-bunny${className ? ' ' + className : ''}`, attrs: { 'aria-hidden': 'true' } });
+    node.append(svg);
+    return node;
+}
+
 function button(label, className, onClick, { iconName = '', title = '', ariaLabel = '', pressed = null } = {}) {
     const node = el('button', {
         className,
@@ -125,7 +144,7 @@ function button(label, className, onClick, { iconName = '', title = '', ariaLabe
 }
 
 function toast(message, type = 'info') {
-    globalThis.toastr?.[type]?.(message, 'Twitlike');
+    globalThis.toastr?.[type]?.(message, 'Hopper');
 }
 
 // Bumped on every image pick; a finished upload with a stale token is discarded.
@@ -608,7 +627,7 @@ function composerBar(canPost, postField = null) {
             targetDraft.image = url;
             render();
         } catch (error) {
-            console.error('[Twitlike] image upload failed', error);
+            console.error('[Hopper] image upload failed', error);
             toast(error.message, 'error');
         }
     });
@@ -916,7 +935,7 @@ function settingsView() {
         void refreshAccounts(session.id)
             .then(current => { if (current) { render(); } })
             .catch(error => {
-                console.error('[Twitlike] settings could not refresh the account list', error);
+                console.error('[Hopper] settings could not refresh the account list', error);
                 toast('The account list could not be refreshed.', 'error');
             });
     };
@@ -1226,7 +1245,7 @@ function switchSession(sessionId, options = {}) {
             if (transition !== transitionEpoch) {
                 return false;
             }
-            console.error('[Twitlike] timeline switch failed', error);
+            console.error('[Hopper] timeline switch failed', error);
             toast(String(error?.message ?? 'That timeline could not be opened.'), 'error');
             return false;
         } finally {
@@ -1269,7 +1288,7 @@ function createTimeline() {
             if (transition !== transitionEpoch) {
                 return false;
             }
-            console.error('[Twitlike] timeline creation failed', error);
+            console.error('[Hopper] timeline creation failed', error);
             toast(String(error?.message ?? 'A new timeline could not be created.'), 'error');
             return false;
         } finally {
@@ -1634,7 +1653,7 @@ async function refresh() {
         }
         state.status = '';
         if (result.warnings.length) {
-            console.warn('[Twitlike] refresh warnings', result.warnings);
+            console.warn('[Hopper] refresh warnings', result.warnings);
             toast(`Kept what made sense. ${result.warnings.length} item(s) were dropped - see the console.`, 'info');
         }
         if (!result.posts.length && !result.interactions.length) {
@@ -1642,12 +1661,12 @@ async function refresh() {
         }
     } catch (error) {
         if (!isLive(epoch)) {
-            console.warn('[Twitlike] refresh cancelled', error);
+            console.warn('[Hopper] refresh cancelled', error);
             return;
         }
         state.status = '';
         // Provider errors are remote text; show a fixed message and keep the raw one local.
-        console.error('[Twitlike] refresh failed', error);
+        console.error('[Hopper] refresh failed', error);
         toast('The refresh failed - check your connection settings, then try again.', 'error');
     } finally {
         if (runs === refreshRuns) {
@@ -1679,7 +1698,7 @@ async function resetTimeline() {
     try {
         await api.writeFeed({ version: 1, posts: [], interactions: [] }, sessionId);
     } catch (error) {
-        console.error('[Twitlike] resetting the saved feed failed', error);
+        console.error('[Hopper] resetting the saved feed failed', error);
         toast('The saved timeline could not be reset.', 'error');
         state.busy = false;
         render();
@@ -1747,7 +1766,7 @@ function closeFeedInternal(cancelTransition, allowExpectedPersonaSwitch = false)
         }
         await api.flushFeed();
     })();
-    void closingTask.catch(error => console.error('[Twitlike] final save failed', error));
+    void closingTask.catch(error => console.error('[Hopper] final save failed', error));
     return closingTask;
 }
 
@@ -1768,7 +1787,7 @@ async function reopenFeed() {
         await closeFeed();
         return await openFeed();
     } catch (error) {
-        console.error('[Twitlike] reopening after the final save failed', error);
+        console.error('[Hopper] reopening after the final save failed', error);
         toast('The timeline could not be reopened because its latest changes are not saved yet.', 'error');
     }
 }
@@ -1788,7 +1807,7 @@ async function waitForClosing() {
             }
             retried = true;
             closingTask = api.flushFeed();
-            void closingTask.catch(saveError => console.error('[Twitlike] final save retry failed', saveError));
+            void closingTask.catch(saveError => console.error('[Hopper] final save retry failed', saveError));
             continue;
         }
         if (pending === closingTask) {
@@ -1825,7 +1844,7 @@ export function openFeed() {
         return sessionTask;
     }
     return openFeedNow().catch(error => {
-        console.error('[Twitlike] opening after the final save failed', error);
+        console.error('[Hopper] opening after the final save failed', error);
         toast('The timeline cannot open until its latest changes are saved.', 'error');
         return false;
     });
@@ -1882,7 +1901,7 @@ async function startFeed() {
 
     const body = el('div', {
         className: `sbtw-shell${failure ? ' sbtw-shell-error' : ''}`,
-        attrs: { role: 'region', 'aria-label': 'Twitlike' },
+        attrs: { role: 'region', 'aria-label': 'Hopper' },
     });
     state.body = body;
     window.dispatchEvent(new CustomEvent('sb:close-conversation-workspace'));
@@ -1895,7 +1914,7 @@ async function startFeed() {
 
     if (failure) {
         const feedFailure = failure.kind === 'feed';
-        console.error(`[Twitlike] the timeline ${failure.kind} could not be loaded`, failure.error);
+        console.error(`[Hopper] the timeline ${failure.kind} could not be loaded`, failure.error);
         body.append(
             session ? sessionBar() : null,
             el('h3', { text: feedFailure ? 'The saved timeline could not be read' : 'The timeline could not be opened' }),
@@ -1929,7 +1948,7 @@ async function resetFailedTimeline() {
     try {
         await api.writeFeed({ version: 1, posts: [], interactions: [] }, sessionId);
     } catch (error) {
-        console.error('[Twitlike] resetting the saved feed failed', error);
+        console.error('[Hopper] resetting the saved feed failed', error);
         // Say why: a reset that keeps failing silently looks like a reset that does nothing.
         toast(String(error?.message ?? 'The saved file could not be cleared - try again.'), 'error');
         return;
@@ -1954,12 +1973,12 @@ function mountCharacterButton() {
         attrs: {
             id: LAUNCH_ID,
             type: 'button',
-            title: 'Open Twitlike',
-            'aria-label': 'Open Twitlike',
+            title: 'Open Hopper',
+            'aria-label': 'Open Hopper',
             'aria-pressed': 'false',
         },
         on: { click: () => openFeed() },
-    }, [icon('fa-hashtag'), el('span', { text: 'Twitlike' })]);
+    }, [bunnyIcon(), el('span', { text: 'Hopper' })]);
 
     // Keep this outside the radiogroup, then visually place it in the pill with CSS.
     toggle.insertAdjacentElement('afterend', node);
@@ -1977,7 +1996,7 @@ function mountWandItem() {
     // Wand entries must be divs: the host styles #extensionsMenu > div.
     const node = el('div', {
         className: 'list-group-item flex-container flexGap5 interactable',
-        attrs: { id: WAND_ID, tabindex: '0', role: 'button', 'aria-label': 'Open Twitlike' },
+        attrs: { id: WAND_ID, tabindex: '0', role: 'button', 'aria-label': 'Open Hopper' },
         on: {
             click: () => openFeed(),
             keydown: (event) => {
@@ -1988,8 +2007,8 @@ function mountWandItem() {
             },
         },
     }, [
-        el('div', { className: 'fa-solid fa-hashtag extensionsMenuExtensionButton' }),
-        el('span', { text: 'Twitlike' }),
+        bunnyIcon('extensionsMenuExtensionButton'),
+        el('span', { text: 'Hopper' }),
     ]);
     menu.append(node);
     owned.add(node);
@@ -2003,14 +2022,14 @@ function mountDrawer() {
     let drawer = document.getElementById(DRAWER_ID);
     if (!drawer) {
         const content = el('div', { className: 'inline-drawer-content', attrs: { id: `${DRAWER_ID}-content` } }, [
-            el('p', { className: 'sbtw-hint', text: 'A pretend social timeline for your own cast. Everything lives in the Twitlike workspace - open it and use Settings there.' }),
-            button('Open Twitlike', 'sbtw-btn sbtw-btn-primary', () => openFeed(), { iconName: 'fa-hashtag' }),
+            el('p', { className: 'sbtw-hint', text: 'A pretend social timeline for your own cast. Everything lives in the Hopper workspace - open it and use Settings there.' }),
+            (() => { const open = button('Open Hopper', 'sbtw-btn sbtw-btn-primary', () => openFeed()); open.prepend(bunnyIcon()); return open; })(),
         ]);
         const toggle = el('div', {
             className: 'inline-drawer-toggle inline-drawer-header',
             attrs: { tabindex: '0', role: 'button', 'aria-expanded': 'false', 'aria-controls': `${DRAWER_ID}-content` },
         }, [
-            el('b', { text: 'Twitlike' }),
+            el('b', { text: 'Hopper' }),
             el('div', { className: 'inline-drawer-icon fa-solid fa-circle-chevron-down down' }),
         ]);
         const onToggle = () => {

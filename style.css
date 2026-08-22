@@ -78,7 +78,7 @@
 
 /* --- chat workspace ----------------------------------------------------- */
 
-/* Twitlike takes over the native chat workspace, just like Conversation Mode. The top bar
+/* Hopper takes over the native chat workspace, just like Conversation Mode. The top bar
  * remains outside this element and stays fully interactive. */
 #sheld[data-sbtw-mode='on'] {
     display: block;
@@ -973,3 +973,38 @@ body.reduced-motion .sbtw-poll-bar {
 body.reduced-motion .sbtw-action-on {
     transform: none;
 }
+
+/* The bunny mark: a Font Awesome-sized inline icon wherever the host would put an <i class="fa-solid"> */
+.sbtw-bunny {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.125em;
+    flex: 0 0 auto;
+}
+
+.sbtw-bunny svg {
+    width: 100%;
+    height: 100%;
+    fill: currentColor;
+}
+
+/* Mirror the host's .sb-character-shell-mode-button .fa-solid box so the third pill matches Roleplay/Conversation. */
+.sbtw-launch .sbtw-bunny {
+    width: 14px;
+    height: 14px;
+    font-size: 13px;
+}
+
+/* Inside the host's 20x20 wand slot the mark sits at the same size as the neighbouring Font Awesome glyphs. */
+.extensionsMenuExtensionButton.sbtw-bunny svg {
+    width: 1em;
+    height: 1em;
+}
+
+.sbtw-btn .sbtw-bunny {
+    margin-right: 2px;
+}
+

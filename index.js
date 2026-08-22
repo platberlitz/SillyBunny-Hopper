@@ -60,7 +60,7 @@ async function syncCarryover() {
     } catch (error) {
         if (isCurrent()) {
             clearCarryover();
-            console.error('[Twitlike] could not build the carryover block', error);
+            console.error('[Hopper] could not build the carryover block', error);
         }
     }
 }
@@ -73,7 +73,7 @@ async function closeAndSyncCarryover(closeOptions) {
         await closeFeed(closeOptions);
     } catch (error) {
         clearCarryover();
-        console.error('[Twitlike] could not save the timeline before changing context', error);
+        console.error('[Hopper] could not save the timeline before changing context', error);
         return;
     }
     if (active) {
@@ -119,9 +119,9 @@ function stop() {
         unsubscribeAll();
         ctx().setExtensionPrompt('SillyBunny-TwitterLike', '', 1, 1, false, 0);
     } catch (error) {
-        console.error('[Twitlike] teardown had a problem', error);
+        console.error('[Hopper] teardown had a problem', error);
     }
-    const finalSave = flushFeed().catch(error => console.error('[Twitlike] final save failed', error));
+    const finalSave = flushFeed().catch(error => console.error('[Hopper] final save failed', error));
     unmountAll();
     // The host may or may not await disable(), but nothing is left dangling either way.
     return finalSave;

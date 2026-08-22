@@ -1,8 +1,10 @@
-# SillyBunny Twitlike
+# SillyBunny Hopper
 
 A pretend social timeline for a SillyBunny cast: persona-scoped sessions with their own profiles, Scenario Notes, invited characters, follows and history, filled by one model request per **Refresh**, with posting, replies, reposts, likes, polls and pictures by hand.
 
-![Twitlike: the Main timeline with posts and threaded replies](screenshots/timeline.png)
+![Hopper sits in the Character Menu next to Roleplay and Conversation](screenshots/launch.png)
+
+![Hopper: the Main timeline with posts and threaded replies](screenshots/timeline.png)
 
 | A character's profile | The cast in Settings |
 | --- | --- |
@@ -10,7 +12,7 @@ A pretend social timeline for a SillyBunny cast: persona-scoped sessions with th
 
 | Typing @ in the composer | On a phone |
 | --- | --- |
-| ![The mention picker listing known accounts under the composer](screenshots/mentions.png) | <img src="screenshots/mobile.png" alt="Twitlike on a phone" width="300"> |
+| ![The mention picker listing known accounts under the composer](screenshots/mentions.png) | <img src="screenshots/mobile.png" alt="Hopper on a phone" width="300"> |
 
 Everything here is fiction. Nothing is posted anywhere real, and no account belongs to a person who exists. One caveat worth stating plainly: **Refresh** sends the characters' profiles and the recent timeline to whichever model connection is configured, local or remote. Anything that should not reach that API should not be on the timeline.
 
@@ -18,7 +20,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 ## What it does
 
-- Runs as a chat workspace: **Twitlike** sits in the Character Menu next to Roleplay and Conversation (and in the wand menu), replaces the chat area while open, and leaves the top bar usable; **Home** returns to the landing page.
+- Runs as a chat workspace: **Hopper** sits in the Character Menu next to Roleplay and Conversation, wearing the SillyBunny bunny (and in the wand menu), replaces the chat area while open, and leaves the top bar usable; **Home** returns to the landing page.
 - Keeps one or more timeline sessions, each owned by a persona with its own name, type, profile, cast, follows and history. Switching sessions equips that session's persona.
 - **Refresh** picks a few invited characters (the ones quiet longest), writes profiles for any that lack one, and asks the model for a batch of posts, replies, reposts, likes, follows and poll votes in a single request.
 - Posting by hand, with one picture from disk and a poll of two to four options; **Refresh** lives in the same button row.
@@ -31,7 +33,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 ## Using it
 
-**Opening it.** Choose **Twitlike** in the Character Menu, beside Roleplay and Conversation, or use the wand menu. The session picker at the top switches timelines; **New timeline** starts another one.
+**Opening it.** Choose **Hopper** in the Character Menu, beside Roleplay and Conversation, or use the wand menu. The session picker at the top switches timelines; **New timeline** starts another one.
 
 **Before the first Refresh.** Open **Settings** inside the feed and invite at least one character, apply a host group as the cast, or turn on the ambient strangers. Then press **Refresh** and wait; the status line says what it is doing.
 
@@ -56,7 +58,7 @@ When things are dropped, a note says how many and the details go to the console.
 
 ## Settings
 
-All of them live inside the Twitlike workspace under **Settings**. The drawer in the Extensions panel only holds a button to open Twitlike; a timeline does not belong in a half-width settings column.
+All of them live inside the Hopper workspace under **Settings**. The drawer in the Extensions panel only holds a button to open Hopper; a timeline does not belong in a half-width settings column.
 
 - **Who posts** - which characters take part, whether the ambient strangers join in, and how many accounts are active per refresh.
 - **Timeline identity** - the session's name, freeform type, persona and equipped Scenario Notes. The type tells the model what sort of social setting this is; it is not a fixed list.
