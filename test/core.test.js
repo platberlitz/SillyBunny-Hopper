@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    AMBIENT_ACCOUNTS,
     DEFAULTS,
     KIND_PERSONA,
     accountKey,
@@ -27,6 +26,10 @@ import {
     insertMention,
     matchMentionAccounts,
     mentionQueryAt,
+    MAX_ACTIVE_STRANGERS,
+    MAX_NEW_STRANGERS_PER_REFRESH,
+    normalizeStrangers,
+    normalizeSession,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -107,6 +110,7 @@ test('v1 settings migrate wholesale into one legacy timeline session', () => {
         personaId: '',
         invited: ['ada.png'],
         ambient: true,
+        strangers: [],
         scenarioNoteIds: [],
         personaProfile: { name: '', handle: '', bio: '', location: '' },
         follows: { 'persona:me.png': ['character:ada.png'] },
@@ -147,11 +151,24 @@ test('deriveAccounts only includes invited characters', () => {
     assert.deepEqual(accounts.map(a => a.key), ['persona:me.png', 'character:ada.png']);
 });
 
-test('deriveAccounts adds ambient accounts only when enabled', () => {
-    const off = deriveAccounts({ characters: [], invited: [], ambient: false });
-    const on = deriveAccounts({ characters: [], invited: [], ambient: true });
+test('deriveAccounts adds the session strangers only when strangers are allowed', () => {
+    const strangers = [{ id: 'stranger-wren', name: 'Wren Hale', handle: 'wren_hale', bio: 'Bus enthusiast.' }, { id: 'stranger-x', name: 'Ax', handle: 'ax' }];
+    const off = deriveAccounts({ characters: [], invited: [], ambient: false, strangers });
+    const on = deriveAccounts({ characters: [], invited: [], ambient: true, strangers });
     assert.equal(off.length, 0);
-    assert.equal(on.length, AMBIENT_ACCOUNTS.length);
+    assert.deepEqual(on.map(a => `${a.kind}:${a.entityId}@${a.handle}`), ['ambient:stranger-wren@wren_hale', 'ambient:stranger-x@ax']);
+    assert.equal(on[0].hasProfile, true);
+    assert.equal(on[0].bio, 'Bus enthusiast.');
+});
+
+test('normalizeStrangers drops junk, dedupes ids and keeps the newest', () => {
+    const list = normalizeStrangers([{ id: 'a', name: 'A', handle: 'a' }, { id: 'a', name: 'dup', handle: 'dup' }, { name: 'no id', handle: 'x' }, 'junk', { id: 'b', name: 'B', handle: 'b', bio: 'x'.repeat(400) }]);
+    assert.deepEqual(list.map(s => s.id), ['a', 'b']);
+    assert.equal(list[1].bio.length, 300);
+    const many = normalizeStrangers(Array.from({ length: 40 }, (_, i) => ({ id: `s${i}`, name: `S${i}`, handle: `s${i}` })));
+    assert.equal(many.length, 30);
+    assert.equal(many[0].id, 's10');
+    assert.deepEqual(normalizeSession({ strangers: [{ id: 'q', name: 'Q', handle: 'q' }] }).strangers.map(s => s.id), ['q']);
 });
 
 test('handles are unique even when two characters share a name', () => {
@@ -226,30 +243,69 @@ test('selectParticipants prefers the account that has been quiet longest', () =>
     assert.equal(chosen[0].key, 'character:bo.png');
 });
 
-test('ambient accounts stay rare - they need the 25% roll', () => {
+test('existing strangers come along, at most two, on top of the characters', () => {
+    const strangers = Array.from({ length: 5 }, (_, i) => ({ id: `s${i}`, name: `Stranger ${i}`, handle: `stranger_${i}` }));
     const accounts = deriveAccounts({
         characters: [{ avatar: 'a.png', name: 'Ada' }],
         invited: ['a.png'],
         ambient: true,
+        strangers,
     });
     const config = settings({ active: { mode: 'exact', count: 1 }, ambient: true });
-    const unlucky = selectParticipants(accounts, config, { random: () => 0.9 });
-    assert.ok(unlucky.every(a => a.kind !== 'ambient'));
+    const chosen = selectParticipants(accounts, config, { random: () => 0.9 });
+    assert.deepEqual(chosen.filter(a => a.kind === 'character').map(a => a.key), ['character:a.png']);
+    assert.equal(chosen.filter(a => a.kind === 'ambient').length, MAX_ACTIVE_STRANGERS);
+    const none = selectParticipants(deriveAccounts({ characters: [{ avatar: 'a.png', name: 'Ada' }], invited: ['a.png'], ambient: true, strangers: [] }), config, { random: () => 0.9 });
+    assert.deepEqual(none.map(a => a.kind), ['character']);
 });
 
 test('selectParticipants returns nothing when there is nobody to pick', () => {
     assert.deepEqual(selectParticipants([], settings(), { random: () => 0 }), []);
 });
 
-test('an ambient-only install still gets a cast in every mode', () => {
-    const accounts = deriveAccounts({ characters: [], invited: [], ambient: true });
-    assert.equal(accounts.length, AMBIENT_ACCOUNTS.length);
+test('a strangers-only timeline still gets a cast from the strangers it has', () => {
+    const strangers = Array.from({ length: 4 }, (_, i) => ({ id: `s${i}`, name: `Stranger ${i}`, handle: `stranger_${i}` }));
+    const accounts = deriveAccounts({ characters: [], invited: [], ambient: true, strangers });
     const range = selectParticipants(accounts, settings(), { random: () => 0 });
-    const exact = selectParticipants(accounts, settings({ active: { mode: 'exact', count: 2 } }), { random: () => 0.9 });
     const all = selectParticipants(accounts, settings({ active: { mode: 'all' } }), { random: () => 0 });
-    assert.ok(range.length >= 1 && range.length <= AMBIENT_ACCOUNTS.length);
-    assert.equal(exact.length, 2);
-    assert.equal(all.length, AMBIENT_ACCOUNTS.length);
+    assert.equal(range.length, MAX_ACTIVE_STRANGERS);
+    assert.equal(all.length, MAX_ACTIVE_STRANGERS);
+    assert.deepEqual(selectParticipants(deriveAccounts({ characters: [], invited: [], ambient: true, strangers: [] }), settings(), { random: () => 0 }), []);
+});
+
+test('materializeRefresh takes new strangers within the limit, lets them act, and keeps them mostly commenting', () => {
+    const accounts = deriveAccounts({ characters: [{ avatar: 'a.png', name: 'Ada' }], invited: ['a.png'], persona: { entityId: 'me.png', name: 'Me' } });
+    let n = 0;
+    const newId = () => `id-${++n}`;
+    const parsed = {
+        posts: [
+            { tempId: 'p1', authorHandle: '@ada', content: 'Morning.' },
+            { tempId: 'p2', authorHandle: '@quiet_otto', content: 'First post by a stranger.' },
+            { tempId: 'p3', authorHandle: '@quiet_otto', content: 'Second post by the same stranger.' },
+        ],
+        interactions: [
+            { actorHandle: '@quiet_otto', targetTempId: 'p1', type: 'reply', content: 'Morning yourself.' },
+            { actorHandle: '@ferry_jo', targetTempId: 'p1', type: 'like' },
+            { actorHandle: '@nobody', targetTempId: 'p1', type: 'like' },
+        ],
+        follows: [],
+        strangers: [
+            { name: 'Quiet Otto', handle: 'quiet_otto', bio: 'Reads the tide tables for fun.' },
+            { name: 'Ferry Jo', handle: 'ferry jo', bio: '' },
+            { name: 'Third Wheel', handle: 'third', bio: 'over the limit' },
+        ],
+    };
+    const result = materializeRefresh(parsed, { accounts, settings: settings(), newId, now: 5, strangerLimit: MAX_NEW_STRANGERS_PER_REFRESH });
+    assert.deepEqual(result.strangers.map(s => `${s.id}:${s.name}:@${s.handle}`), ['stranger-quiet_otto:Quiet Otto:@quiet_otto', 'stranger-ferry_jo:Ferry Jo:@ferry_jo']);
+    assert.deepEqual(result.posts.map(p => p.authorKey), ['character:a.png', 'ambient:stranger-quiet_otto'], 'one stranger post lands, the second is dropped');
+    assert.deepEqual(result.interactions.map(i => `${i.type}:${i.actorKey}`), ['reply:ambient:stranger-quiet_otto', 'like:ambient:stranger-ferry_jo']);
+    assert.ok(result.warnings.some(w => /limit reached/.test(w)));
+    assert.ok(result.warnings.some(w => /unknown handle/.test(w) && /nobody/.test(w)));
+
+    const off = materializeRefresh(parsed, { accounts, settings: settings(), newId, now: 5, strangerLimit: 0 });
+    assert.deepEqual(off.strangers, []);
+    assert.deepEqual(off.posts.map(p => p.authorKey), ['character:a.png']);
+    assert.ok(off.warnings.some(w => /strangers are off/.test(w)));
 });
 
 // --- prompt ---------------------------------------------------------------

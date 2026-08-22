@@ -17,6 +17,7 @@ import {
     parseProfileResponse,
     parseRefreshResponse,
     selectParticipants,
+    MAX_NEW_STRANGERS_PER_REFRESH,
 } from './core.js';
 
 // getContext() copies chatId / characterId / chatMetadata by value, so a cached reference
@@ -289,6 +290,7 @@ export async function currentAccounts(sessionId = ensureActiveSession().id) {
         invited: session.invited,
         persona,
         ambient: session.ambient,
+        strangers: session.strangers,
         profiles,
     });
 }
@@ -777,8 +779,8 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         posts: feed.posts,
         interactions: feed.interactions,
     });
-    if (!active.length) {
-        throw new Error('Invite a character first, or turn on the ambient accounts.');
+    if (!active.length && !session.ambient) {
+        throw new Error('Invite a character first, or let strangers join in.');
     }
 
     // Only the selected cast gets a profile, so an install with 200 characters does not
@@ -811,6 +813,7 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         settings: current,
         now: Date.now(),
         localTime: new Date().toLocaleString(),
+        strangers: session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
     });
 
     let parsed = null;
@@ -842,6 +845,7 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         interactions: feed.interactions,
         newId: () => ctx().uuidv4(),
         now: Date.now(),
+        strangerLimit: session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
     });
 
     if (current.images.enabled) {
@@ -871,6 +875,12 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
     // durable feed ahead of the in-memory feed and refresh timestamp.
     feed.posts.push(...result.posts);
     feed.interactions.push(...result.interactions);
+
+    if (result.strangers.length) {
+        // Strangers are session records: a stranger a later refresh talks to must still exist.
+        const freshSession = getSession(sessionId);
+        updateSession(sessionId, { strangers: [...(freshSession?.strangers ?? []), ...result.strangers] });
+    }
 
     if (result.follows.length) {
         // Merge into the freshest settings so a follow made manually while the model was

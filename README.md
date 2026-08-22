@@ -6,9 +6,9 @@ A pretend social timeline for a SillyBunny cast: persona-scoped sessions with th
 
 ![Hopper: the Main timeline with posts and threaded replies](screenshots/timeline.png)
 
-| A character's profile | The cast in Settings |
+| A stranger's profile (invented by the model) | The cast in Settings |
 | --- | --- |
-| ![A character profile with bio, location, follow counts and their posts](screenshots/profile.png) | ![The Who posts section: invited characters, ambient strangers and accounts per refresh](screenshots/settings.png) |
+| ![A stranger's profile with bio, follow counts and the posts they liked](screenshots/profile.png) | ![The Who posts section: invited characters, the strangers switch and accounts per refresh](screenshots/settings.png) |
 
 | Typing @ in the composer | On a phone |
 | --- | --- |
@@ -23,9 +23,10 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 - Runs as a chat workspace: **Hopper** sits in the Character Menu next to Roleplay and Conversation, wearing the SillyBunny bunny (and in the wand menu), replaces the chat area while open, and leaves the top bar usable; **Home** returns to the landing page.
 - Keeps one or more timeline sessions, each owned by a persona with its own name, type, profile, cast, follows and history. Switching sessions equips that session's persona.
 - **Refresh** picks a few invited characters (the ones quiet longest), writes profiles for any that lack one, and asks the model for a batch of posts, replies, reposts, likes, follows and poll votes in a single request.
+- Optional **strangers**: random passers-by the model invents (name, handle, one-line bio) who mostly reply and like. They are kept per timeline, so they get a profile, can be followed or replied to, and turn up again later; a couple of them come along on each refresh and up to two new ones may appear.
 - Posting by hand, with one picture from disk and a poll of two to four options; **Refresh** lives in the same button row.
 - Like, repost and reply on every post; reply to a specific comment; delete your own replies and posts.
-- `@` in a composer lists the accounts the session knows (persona, invited characters, ambient strangers); arrows move, Enter or Tab inserts the handle.
+- `@` in a composer lists the accounts the session knows (persona, invited characters, strangers); arrows move, Enter or Tab inserts the handle.
 - **Main** is everything; **Following** is the accounts the persona follows, their posts and reposts with an attribution line. A search box filters the current timeline by text, author, handle, poll text or reply text.
 - Profiles with Posts, Reposts, Likes and Media sections, and follow/unfollow from any profile.
 - Optional **carryover**: recent activity dropped into a chat's prompt, so a character can refer to the argument they had on the timeline this morning. Off by default.
@@ -35,7 +36,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 **Opening it.** Choose **Hopper** in the Character Menu, beside Roleplay and Conversation, or use the wand menu. The session picker at the top switches timelines; **New timeline** starts another one.
 
-**Before the first Refresh.** Open **Settings** inside the feed and invite at least one character, apply a host group as the cast, or turn on the ambient strangers. Then press **Refresh** and wait; the status line says what it is doing.
+**Before the first Refresh.** Open **Settings** inside the feed and invite at least one character, apply a host group as the cast, or let strangers join in. Then press **Refresh** and wait; the status line says what it is doing.
 
 **Posting.** Write in the box at the top. **Image** attaches one picture, **Poll** adds two to four options. Type `@` to pick an account to mention; the handle is inserted as `@handle`. Post text is never rendered as HTML: it is inserted as text with `@handles` turned into links, and no markdown, which is also how the real thing works.
 
@@ -45,10 +46,10 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 ## What Refresh actually does
 
-It selects a few invited characters, writes profiles for those that have none, and sends one request. The reply comes back as JSON and is treated as untrusted. Before anything is stored:
+It selects a few invited characters (plus a couple of the strangers the timeline already has, when strangers are on), writes profiles for those that have none, and sends one request. The reply comes back as JSON and is treated as untrusted. Before anything is stored:
 
 - anything written as the persona is dropped; the model does not speak as the user
-- invented accounts are dropped
+- invented accounts are dropped, except the strangers the prompt allowed: at most two new ones per refresh, each given a unique handle and kept with the timeline, and strangers get at most one post per refresh (the rest of their activity is replies, likes and votes)
 - the quotas are re-applied, whatever the model decided
 - an account cannot like the same post twice, or like its own post
 - repeated text from the same account is dropped
@@ -60,7 +61,7 @@ When things are dropped, a note says how many and the details go to the console.
 
 All of them live inside the Hopper workspace under **Settings**. The drawer in the Extensions panel only holds a button to open Hopper; a timeline does not belong in a half-width settings column.
 
-- **Who posts** - which characters take part, whether the ambient strangers join in, and how many accounts are active per refresh.
+- **Who posts** - which characters take part, whether strangers may join in (random passers-by invented by the model, not part of the cast), and how many accounts are active per refresh.
 - **Timeline identity** - the session's name, freeform type, persona and equipped Scenario Notes. The type tells the model what sort of social setting this is; it is not a fixed list.
 - **Persona profile** - a timeline-only display name, handle, bio and location. It never rewrites the host persona.
 - **Connection** - which connection profile writes the posts. A cheap model is fine here; a separate one saves the roleplay connection for roleplay. Unset, it uses the current connection.

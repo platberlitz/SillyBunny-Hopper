@@ -400,7 +400,7 @@ function replyNode(reply) {
     return el('div', { className: 'sbtw-reply', attrs: { 'data-kind': reply.actorSnapshot?.kind ?? '' } }, [
         // The avatar shares a row with the name block so it stays centred on it even when the time wraps.
         el('div', { className: 'sbtw-reply-head' }, [
-            avatarNode(account, 'sm'),
+            avatarNode(account ?? reply.actorSnapshot ?? null, 'sm'),
             el('div', { className: 'sbtw-meta' }, [
                 el('button', {
                     className: 'sbtw-name',
@@ -452,7 +452,7 @@ function postNode(post, repost = null) {
             el('span', { text: `${nameFor(repost.actorKey, repost.actorSnapshot)} reposted` }),
         ]) : null,
         el('div', { className: 'sbtw-post-row' }, [
-            avatarNode(account, 'md'),
+            avatarNode(account ?? post.authorSnapshot ?? null, 'md'),
             el('div', { className: 'sbtw-post-main' }, [
                 el('div', { className: 'sbtw-meta' }, [
                     el('button', {
@@ -808,7 +808,8 @@ function profileView() {
 
     const follows = state.session?.follows ?? {};
     const followerCount = Object.values(follows).filter(list => list.includes(account.key)).length;
-    const canFollow = me && account.key !== me.key && account.kind !== KIND_AMBIENT;
+    // Strangers are people the model invented with profiles of their own, so they can be followed too.
+    const canFollow = me && account.key !== me.key;
 
     return el('div', { className: 'sbtw-profile' }, [
         el('div', { className: 'sbtw-profile-head' }, [
@@ -879,7 +880,7 @@ function notificationsView() {
             },
         },
     }, [
-        avatarNode(accountFor(item.actorKey), 'sm'),
+        avatarNode(accountFor(item.actorKey) ?? item.actorSnapshot ?? null, 'sm'),
         el('div', {}, [
             el('div', { className: 'sbtw-meta' }, [
                 el('span', { className: 'sbtw-name', text: nameFor(item.actorKey, item.actorSnapshot) }),
@@ -1119,7 +1120,8 @@ function settingsView() {
             invites,
             el('span', { className: 'sbtw-hint', text: 'Only invited characters take part in a refresh.' }),
         ]),
-        checkbox('Include the ambient strangers', session.ambient, value => saveSession({ ambient: value })),
+        checkbox('Let strangers join in', session.ambient, value => saveSession({ ambient: value })),
+        el('p', { className: 'sbtw-hint', text: `Random passers-by the model invents, not part of the cast. They mostly reply and like, get a profile, and come back later.${session.strangers.length ? ` ${session.strangers.length} so far.` : ''}` }),
         field('Accounts per refresh', activeMode),
         settings.active.mode === 'range'
             ? el('div', { className: 'sbtw-row' }, [

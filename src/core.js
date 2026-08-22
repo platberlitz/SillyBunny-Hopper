@@ -15,17 +15,15 @@ export const POST_MAX_CHARS = 4000;
 export const REPLY_MAX_CHARS = 2000;
 
 /**
- * Ambient filler accounts. They have no character card, so they are defined entirely here.
- * They exist so a timeline with two invited characters does not read as an empty room.
+ * Strangers: passers-by who are not part of the cast. The model invents them (name,
+ * handle, one-line bio) when a session allows it; they are kept per session so they
+ * have profiles, can be followed and replied to, and turn up again later.
  */
-export const AMBIENT_ACCOUNTS = Object.freeze([
-    { slug: 'signalloss', name: 'Signal Loss', handle: 'signalloss', bio: 'Posting through it.' },
-    { slug: 'kettlelogic', name: 'Kettle Logic', handle: 'kettlelogic', bio: 'Arguing in good faith, allegedly.' },
-    { slug: 'nocturneadmin', name: 'Nocturne Admin', handle: 'nocturneadmin', bio: 'Runs the night shift. Do not @ me before noon.' },
-    { slug: 'paperlantern', name: 'Paper Lantern', handle: 'paperlantern', bio: 'Soft takes only.' },
-    { slug: 'staticgarden', name: 'Static Garden', handle: 'staticgarden', bio: 'Photographs of nothing, mostly.' },
-    { slug: 'wrongbus', name: 'Wrong Bus', handle: 'wrongbus', bio: 'Commuting, spiritually.' },
-]);
+export const MAX_NEW_STRANGERS_PER_REFRESH = 2;
+export const MAX_ACTIVE_STRANGERS = 2;
+export const MAX_STRANGERS_KEPT = 30;
+/** Strangers mostly comment; at most this many stranger-authored posts land per refresh. */
+export const MAX_STRANGER_POSTS_PER_REFRESH = 1;
 
 export const DEFAULT_TONE = [
     '- Everyone on this timeline is an adult. In-character drama, flirtation, gossip, rudeness and explicit references are allowed where they fit the accounts involved.',
@@ -92,6 +90,32 @@ function normalizeProfile(value) {
     };
 }
 
+export function normalizeStrangers(value) {
+    const seen = new Set();
+    const out = [];
+    for (const item of Array.isArray(value) ? value : []) {
+        if (!isPlainObject(item)) {
+            continue;
+        }
+        const id = String(item.id ?? '').trim().slice(0, 40);
+        const name = String(item.name ?? '').trim().slice(0, 60);
+        const handle = String(item.handle ?? '').trim().slice(0, 80);
+        if (!id || !name || !handle || seen.has(id)) {
+            continue;
+        }
+        seen.add(id);
+        out.push({
+            id,
+            name,
+            handle,
+            bio: String(item.bio ?? '').slice(0, 300),
+            location: String(item.location ?? '').slice(0, 80),
+            createdAt: clampInt(item.createdAt, 0, Number.MAX_SAFE_INTEGER, 0),
+        });
+    }
+    return out.slice(-MAX_STRANGERS_KEPT);
+}
+
 function normalizeFollows(value) {
     const follows = {};
     if (isPlainObject(value)) {
@@ -114,6 +138,7 @@ export function normalizeSession(raw, id = '') {
         personaId: typeof source.personaId === 'string' ? source.personaId.slice(0, 500) : '',
         invited: [...new Set(stringArray(source.invited))],
         ambient: source.ambient === true,
+        strangers: normalizeStrangers(source.strangers),
         scenarioNoteIds: [...new Set(stringArray(source.scenarioNoteIds))],
         personaProfile: normalizeProfile(source.personaProfile),
         follows: normalizeFollows(source.follows),
@@ -260,7 +285,7 @@ export function handleFromName(name, taken = new Set()) {
  * Builds the account list for a refresh or a render. `characters` is the host's character
  * array, which is empty until getCharacters() has been awaited - the caller owns that.
  */
-export function deriveAccounts({ characters = [], invited = [], persona = null, ambient = false, profiles = {} } = {}) {
+export function deriveAccounts({ characters = [], invited = [], persona = null, ambient = false, strangers = [], profiles = {} } = {}) {
     const accounts = [];
     const taken = new Set();
     const invitedSet = new Set(invited);
@@ -314,14 +339,22 @@ export function deriveAccounts({ characters = [], invited = [], persona = null, 
     }
 
     if (ambient) {
-        for (const item of AMBIENT_ACCOUNTS) {
+        for (const item of normalizeStrangers(strangers)) {
             push({
-                key: accountKey(KIND_AMBIENT, item.slug),
+                key: accountKey(KIND_AMBIENT, item.id),
                 kind: KIND_AMBIENT,
-                entityId: item.slug,
+                entityId: item.id,
                 name: item.name,
                 bio: item.bio,
             });
+            // A stranger's handle is the one the model gave it, kept stable across refreshes.
+            const account = accounts.at(-1);
+            const wanted = handleFromName(item.handle, new Set([...taken].filter(handle => handle !== account.handle)));
+            taken.delete(account.handle);
+            account.handle = wanted;
+            taken.add(wanted);
+            account.location = item.location || '';
+            account.hasProfile = true;
         }
     }
 
@@ -385,13 +418,14 @@ export function selectParticipants(accounts, settings, { posts = [], interaction
     }
     wanted = Math.max(1, Math.min(wanted, characters.length + ambient.length));
 
-    // An ambient-only install has no characters to rank - the strangers ARE the cast.
+    // Strangers who already exist: a couple of them come along each time, chosen at random,
+    // on top of the characters. New ones are introduced by the model itself.
+    const shuffledStrangers = [...ambient].sort(() => random() - 0.5);
+    const strangersAlong = shuffledStrangers.slice(0, MAX_ACTIVE_STRANGERS);
+
+    // No characters: the strangers are the whole cast.
     if (!characters.length) {
-        if (mode === 'all') {
-            return [...ambient];
-        }
-        const shuffled = [...ambient].sort(() => random() - 0.5);
-        return shuffled.slice(0, Math.min(wanted, ambient.length));
+        return strangersAlong;
     }
 
     const ranked = characters
@@ -399,22 +433,8 @@ export function selectParticipants(accounts, settings, { posts = [], interaction
         .sort((a, b) => (a.seen - b.seen) || (a.jitter - b.jitter))
         .map(entry => entry.account);
 
-    const chosen = ranked.slice(0, wanted);
-
-    // One ambient account, one time in four, and never as the entire cast.
-    const roomLeft = wanted - chosen.length;
-    const wantAmbient = ambient.length > 0 && (mode === 'all' || (chosen.length > 0 && random() < 0.25));
-    if (wantAmbient) {
-        const pick = ambient[Math.floor(random() * ambient.length)];
-        if (mode === 'all') {
-            chosen.push(...ambient);
-        } else if (roomLeft > 0) {
-            chosen.push(pick);
-        } else if (chosen.length > 1) {
-            chosen[chosen.length - 1] = pick;
-        }
-    }
-
+    const chosen = ranked.slice(0, Math.min(wanted, characters.length));
+    chosen.push(...strangersAlong);
     return chosen;
 }
 
@@ -426,7 +446,7 @@ export function buildSystemPrompt(settings) {
         '',
         '# Rules',
         '- Structured actions are limited to posts, polls, follows, likes, reposts, replies and poll votes.',
-        '- Use only the accounts listed under "Active Accounts" by @handle. Never invent an account.',
+        '- Use only the accounts listed under "Active Accounts" by @handle, plus any strangers you introduce under "strangers" when the prompt allows them. Never invent any other account.',
         '- The user persona is controlled exclusively by the user. Never write posts, replies, likes, reposts, votes or follows as a persona. A persona may only be mentioned or targeted by other accounts.',
         '- Interactions may target posts included in this prompt, or posts you create in this response.',
         '- For each interaction set either targetTempId or targetPostId, and set the other to null.',
@@ -559,7 +579,7 @@ export function matchesTimelineQuery(post, interactions, query) {
     return values.some(value => searchableText(value).includes(needle));
 }
 
-export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '' }) {
+export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '', strangers = 0 } = {}) {
     const activeKeys = new Set(active.map(account => account.key));
     const roster = accounts
         .map((account) => {
@@ -606,7 +626,17 @@ export function buildContextMessage({ accounts, active, persona, session = null,
 
     const activeAmbient = active.filter(account => account.kind === KIND_AMBIENT);
     if (activeAmbient.length) {
-        sections.push('# Ambient Accounts', activeAmbient.map(characterBlock).join('\n\n'), '');
+        sections.push('# Strangers Already Around', activeAmbient.map(characterBlock).join('\n\n'), '');
+    }
+
+    if (strangers > 0) {
+        sections.push(
+            '# Strangers',
+            `Passers-by who are not part of the cast may join in. You may introduce up to ${strangers} new strangers this refresh: list each under "strangers" with a name, a handle (lowercase letters, digits and underscores, no @) and a one-line bio, then write as them using that @handle. Strangers mostly reply, like and vote; at most one stranger starts a post. Give them ordinary, varied names and voices; never reuse a handle from Active Accounts, and never let one speak as the persona or as a character. Leave "strangers" empty when nobody new would plausibly show up.`,
+            '',
+        );
+    } else {
+        sections.push('# Strangers', 'Not allowed this refresh: leave "strangers" empty and use only the accounts above.', '');
     }
 
     sections.push(
@@ -652,16 +682,21 @@ const OUTPUT_SHAPE = {
         actorHandle: 'exact @handle of a non-persona account',
         targetHandle: 'exact @handle from Active Accounts',
     }],
+    strangers: [{
+        name: 'display name of a new passer-by, only when the Strangers section allows it',
+        handle: 'new handle without @: lowercase letters, digits, underscores',
+        bio: 'one-line bio',
+    }],
 };
 
 export function buildFormatMessage() {
     return ['# JSON Output Format', JSON.stringify(OUTPUT_SHAPE, null, 2)].join('\n');
 }
 
-export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime }) {
+export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0 }) {
     return [
         { role: 'system', content: buildSystemPrompt(settings) },
-        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime }) },
+        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers }) },
         { role: 'user', content: buildFormatMessage() },
     ];
 }
@@ -783,6 +818,7 @@ export function parseRefreshResponse(raw) {
         posts: Array.isArray(data.posts) ? data.posts : [],
         interactions: Array.isArray(data.interactions) ? data.interactions : [],
         follows: Array.isArray(data.follows) ? data.follows : [],
+        strangers: Array.isArray(data.strangers) ? data.strangers : [],
     };
 }
 
@@ -834,10 +870,43 @@ export function materializeRefresh(parsed, {
     interactions: existingInteractions = [],
     newId,
     now = Date.now(),
+    strangerLimit = 0,
 } = {}) {
     const warnings = [];
     const byHandle = handleIndex(accounts);
     const actorKeys = allowedActorKeys ? new Set(allowedActorKeys) : null;
+
+    // New strangers first: they become accounts for this batch, so their posts and replies resolve.
+    const outStrangers = [];
+    if (strangerLimit > 0) {
+        const taken = new Set(accounts.map(account => String(account.handle).toLowerCase()));
+        const usedIds = new Set(accounts.map(account => String(account.entityId)));
+        for (const draft of Array.isArray(parsed.strangers) ? parsed.strangers : []) {
+            if (outStrangers.length >= strangerLimit) {
+                warnings.push('stranger: limit reached, extra strangers ignored');
+                break;
+            }
+            const name = String(draft?.name ?? '').trim().slice(0, 60);
+            if (!name) {
+                continue;
+            }
+            const handle = handleFromName(String(draft?.handle ?? '').trim() || name, taken);
+            taken.add(handle);
+            let id = `stranger-${handle}`.slice(0, 40);
+            while (usedIds.has(id)) {
+                id = `${id}-${newId().slice(0, 4)}`.slice(0, 40);
+            }
+            usedIds.add(id);
+            const stranger = { id, name, handle, bio: String(draft?.bio ?? '').trim().slice(0, 300), location: String(draft?.location ?? '').trim().slice(0, 80), createdAt: now };
+            const account = { key: accountKey(KIND_AMBIENT, id), kind: KIND_AMBIENT, entityId: id, name, handle, bio: stranger.bio, location: stranger.location, hasProfile: true, description: '', personality: '', scenario: '' };
+            byHandle.set(handle.toLowerCase(), account);
+            actorKeys?.add(account.key);
+            outStrangers.push(stranger);
+        }
+    } else if (Array.isArray(parsed.strangers) && parsed.strangers.length) {
+        warnings.push(`stranger: ${parsed.strangers.length} ignored, strangers are off for this timeline`);
+    }
+    let strangerPosts = 0;
     const existingPostIds = new Set(existingPosts.map(post => post.id));
     const existingReplyIds = new Set(existingInteractions.filter(item => item.type === 'reply').map(item => item.id));
     const pollByPostId = new Map(existingPosts.filter(post => post.poll).map(post => [post.id, post.poll]));
@@ -880,6 +949,13 @@ export function materializeRefresh(parsed, {
         const author = resolveActor(draft?.authorHandle, 'post');
         if (!author) {
             continue;
+        }
+        if (author.kind === KIND_AMBIENT) {
+            if (strangerPosts >= MAX_STRANGER_POSTS_PER_REFRESH) {
+                warnings.push(`post: strangers mostly comment, extra post by @${author.handle} dropped`);
+                continue;
+            }
+            strangerPosts += 1;
         }
         const body = String(draft?.content ?? '').trim().slice(0, POST_MAX_CHARS);
         if (!body) {
@@ -1038,7 +1114,7 @@ export function materializeRefresh(parsed, {
         outFollows.push({ actorKey: actor.key, targetKey: target.key });
     }
 
-    return { posts: outPosts, interactions: outInteractions, follows: outFollows, warnings };
+    return { posts: outPosts, interactions: outInteractions, follows: outFollows, strangers: outStrangers, warnings };
 }
 
 // --- carryover ------------------------------------------------------------
