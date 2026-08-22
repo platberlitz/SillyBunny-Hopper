@@ -5,6 +5,69 @@
  * and do not exist in every theme, so each one carries a fallback chain.
  */
 
+/* --- launch button, in the Character Menu header ------------------------ */
+
+/*
+ * Sits beside the Roleplay/Conversation picker. The picker and the close button are both
+ * absolutely positioned against the header, so this is too. Its top, right offset and size
+ * are all measured from the picker in src/ui.js rather than hardcoded: the picker moves and
+ * resizes at several breakpoints, so any fixed number is only right at one width.
+ */
+.sbtw-launch {
+    position: absolute;
+    top: var(--sbtw-launch-top, 18px);
+    right: var(--sbtw-launch-right, 274px);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--sbtw-launch-size, 40px);
+    height: var(--sbtw-launch-size, 40px);
+    padding: 0;
+    border: 1px solid color-mix(in srgb, var(--sb-shell-border, var(--SmartThemeBorderColor)) 88%, transparent);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--SmartThemeBodyColor, currentColor);
+    cursor: pointer;
+    z-index: 1;
+    transition: background var(--sb-transition-fast, 120ms) ease, color var(--sb-transition-fast, 120ms) ease;
+}
+
+.sbtw-launch:hover,
+.sbtw-launch:focus-visible {
+    background: color-mix(in srgb, var(--sb-shell-surface, var(--SmartThemeBlurTintColor)) 70%, transparent);
+    color: var(--sb-accent, var(--SmartThemeQuoteColor));
+}
+
+.sbtw-launch:focus-visible {
+    outline: 2px solid var(--sb-focus-ring, var(--sb-accent, currentColor));
+    outline-offset: 2px;
+}
+
+/*
+ * The header reserves right padding for the controls that float over it. Ours adds another
+ * 48px, so the title and subtitle need to stop that much earlier or the text runs under it.
+ * Matching the host's own selector specificity is what makes this stick.
+ */
+#right-nav-panel.openDrawer > .sb-character-shell-header:has(> .sbtw-launch) {
+    padding-right: calc(var(--sb-shell-panel-padding-inline) + 100px);
+}
+
+@media (max-width: 900px) {
+    #right-nav-panel.openDrawer > .sb-character-shell-header:has(> .sbtw-launch) {
+        padding-right: calc(var(--sb-shell-panel-padding-inline) + 166px);
+    }
+}
+
+body.reduced-motion .sbtw-launch {
+    transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sbtw-launch {
+        transition: none;
+    }
+}
+
 /* --- full screen shell -------------------------------------------------- */
 
 /*

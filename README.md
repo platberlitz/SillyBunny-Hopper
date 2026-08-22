@@ -17,13 +17,13 @@ The bit that makes it more than a toy is **carryover**: recent activity can be d
 https://github.com/platberlitz/SillyBunny-TwitterLike
 ```
 
-3. There's a `#` button in the top bar afterwards. It's also in the wand menu if you prefer.
+3. Open the **Character Menu** and there's a `#` button next to the Roleplay/Conversation picker. It's also in the wand menu if you prefer.
 
 No server plugin, no build step, no dependencies.
 
 ## Using it
 
-Open it and you get a full-screen timeline under the top bar. **Main** is everything, **Following** is only the accounts your persona follows.
+Open it from the `#` button in the Character Menu, beside the Roleplay/Conversation picker, and you get a full-screen timeline under the top bar. **Main** is everything, **Following** is only the accounts your persona follows.
 
 Write a post in the box at the top. You can attach one picture from your computer and add a poll of two to four options. Posting by hand doesn't need an AI connection at all.
 

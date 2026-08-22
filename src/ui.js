@@ -14,7 +14,7 @@ import {
 } from './core.js';
 import * as api from './api.js';
 
-const TOPBAR_ID = 'sbtw-topbar-button';
+const LAUNCH_ID = 'sbtw-launch-button';
 const WAND_ID = 'sbtw-wand-button';
 const DRAWER_ID = 'sbtw-drawer';
 const EXTENSION_NAME = 'SillyBunny-TwitterLike';
@@ -35,6 +35,7 @@ const state = {
 };
 
 const owned = new Set();
+let toggleObserver = null;
 
 const dateFormat = new Intl.DateTimeFormat(undefined, {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -1012,36 +1013,81 @@ export async function openFeed() {
 
 // --- mounting -------------------------------------------------------------
 
-function mountTopbarButton() {
-    if (document.getElementById(TOPBAR_ID)) {
+/**
+ * The launch button sits in the Character Menu header, beside the Roleplay/Conversation
+ * picker. That picker is a `role="radiogroup"`, so the button goes next to it as a sibling
+ * and never inside it - a non-radio child would break the group's semantics.
+ *
+ * Both the picker and the close button are absolutely positioned against the header, so
+ * ours is too. Its `right` has to clear the picker, whose width changes when its labels
+ * are hidden below 900px, hence the observer rather than a fixed offset.
+ */
+const LAUNCH_GAP = 8;
+
+function positionLaunchButton() {
+    const toggle = document.getElementById('sb_character_mode_toggle');
+    const node = document.getElementById(LAUNCH_ID);
+    const header = toggle?.parentElement;
+    if (!toggle || !node || !header) {
         return;
     }
-    const host = document.getElementById('top-settings-holder') ?? document.getElementById('top-bar');
-    if (!host) {
+    const box = toggle.getBoundingClientRect();
+    if (box.width <= 0) {
+        // Panel is closed or mid-open; the numbers would be meaningless.
         return;
     }
-    const node = el('div', {
-        className: 'drawer sbtw-topbar',
-        attrs: { id: TOPBAR_ID, 'data-sb-topbar-adopt': 'true' },
-    }, [
-        el('div', {
-            className: 'drawer-toggle',
-            attrs: { title: 'TwitterLike', tabindex: '0', 'aria-label': 'Open TwitterLike' },
-            on: {
-                click: () => openFeed(),
-                keydown: (event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        openFeed();
-                    }
-                },
-            },
-        }, [el('div', { className: 'drawer-icon fa-solid fa-hashtag closedIcon' })]),
-    ]);
-    host.append(node);
+    const frame = header.getBoundingClientRect();
+    // Derive everything from the picker itself. Its top, right offset and height all change
+    // across breakpoints, so hardcoding any of them just moves the bug to another width.
+    node.style.setProperty('--sbtw-launch-top', `${Math.round(box.top - frame.top)}px`);
+    node.style.setProperty('--sbtw-launch-right', `${Math.round(frame.right - box.left + LAUNCH_GAP)}px`);
+    node.style.setProperty('--sbtw-launch-size', `${Math.round(box.height)}px`);
+}
+
+function mountCharacterButton() {
+    if (document.getElementById(LAUNCH_ID)) {
+        positionLaunchButton();
+        return;
+    }
+    const toggle = document.getElementById('sb_character_mode_toggle');
+    const header = toggle?.parentElement;
+    if (!header) {
+        return;
+    }
+    const node = el('button', {
+        className: 'sbtw-launch',
+        attrs: {
+            id: LAUNCH_ID,
+            type: 'button',
+            title: 'TwitterLike',
+            'aria-label': 'Open TwitterLike',
+        },
+        on: { click: () => openFeed() },
+    }, [icon('fa-hashtag')]);
+
+    toggle.insertAdjacentElement('beforebegin', node);
     owned.add(node);
-    // a11y.js restamps role on .drawer-icon a tick after insertion, so set ours after it.
-    setTimeout(() => node.querySelector('.drawer-toggle')?.setAttribute('role', 'button'), 0);
+    positionLaunchButton();
+
+    /*
+     * Measuring once is not enough. The panel animates open, and observing only the picker
+     * catches a mid-animation width (238px for a picker that settles at 248) with no
+     * further callback. So watch the panel as well, and re-measure when its open/close
+     * transition ends - between them the button is never left at a stale offset.
+     */
+    const panel = node.closest('#right-nav-panel') ?? node.closest('.drawer-content');
+    if (typeof ResizeObserver === 'function') {
+        toggleObserver?.disconnect();
+        toggleObserver = new ResizeObserver(() => positionLaunchButton());
+        toggleObserver.observe(toggle);
+        if (panel) {
+            toggleObserver.observe(panel);
+        }
+    }
+    if (panel && !panel.dataset.sbtwPositionBound) {
+        panel.dataset.sbtwPositionBound = 'true';
+        panel.addEventListener('transitionend', positionLaunchButton);
+    }
 }
 
 function mountWandItem() {
@@ -1108,13 +1154,15 @@ function mountDrawer() {
 
 export function mountAll() {
     document.body.classList.add(BODY_CLASS);
-    mountTopbarButton();
+    mountCharacterButton();
     mountWandItem();
     mountDrawer();
 }
 
 export function unmountAll() {
     document.body.classList.remove(BODY_CLASS);
+    toggleObserver?.disconnect();
+    toggleObserver = null;
     for (const node of owned) {
         node.remove();
     }
