@@ -1134,7 +1134,7 @@ function settingsView() {
             : null,
 
         el('h3', { text: 'Connection' }),
-        field('Write posts with', profileSelect, 'A cheap model is fine here. One refresh writes the whole batch.'),
+        field('Write posts with', profileSelect, 'A cheap model is fine here. One refresh writes the whole batch, or one post per request with the option below.'),
 
         el('h3', { text: 'How much each refresh makes' }),
         el('div', { className: 'sbtw-row' }, [
@@ -1144,6 +1144,8 @@ function settingsView() {
             field('Likes', numberInput(settings.quotas.likes, 0, 500, value => save({ quotas: { ...settings.quotas, likes: value } }))),
         ]),
         checkbox('Let accounts make polls', settings.polls, value => save({ polls: value })),
+        checkbox('One post at a time', settings.incremental, value => save({ incremental: value })),
+        el('p', { className: 'sbtw-hint', text: 'Each request writes a single post and the reactions to it, and the timeline fills in as they land. More requests than the batch, but the first post shows up in seconds. Posts above is how many.' }),
 
         el('h3', { text: 'Pictures' }),
         checkbox('Generate images for some posts', settings.images.enabled, value => save({ images: { ...settings.images, enabled: value } })),
@@ -1645,6 +1647,13 @@ async function refresh() {
                 const statusNode = state.body?.querySelector('.sbtw-status');
                 if (statusNode) {
                     statusNode.textContent = message;
+                }
+            },
+            // One-post-at-a-time mode: each committed post is shown as it lands.
+            onPartial: () => {
+                if (isLive(epoch) && state.view === 'timeline') {
+                    byPost = buildInteractionMap();
+                    render();
                 }
             },
         });

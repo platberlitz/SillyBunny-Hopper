@@ -46,7 +46,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 ## What Refresh actually does
 
-It selects a few invited characters (plus a couple of the strangers the timeline already has, when strangers are on), writes profiles for those that have none, and sends one request. The reply comes back as JSON and is treated as untrusted. Before anything is stored:
+It selects a few invited characters (plus a couple of the strangers the timeline already has, when strangers are on), writes profiles for those that have none, and sends one request (or, with **One post at a time** on, one request per post, each committed and shown before the next). The reply comes back as JSON and is treated as untrusted. Before anything is stored:
 
 - anything written as the persona is dropped; the model does not speak as the user
 - invented accounts are dropped, except the strangers the prompt allowed: at most two new ones per refresh, each given a unique handle and kept with the timeline, and strangers get at most one post per refresh (the rest of their activity is replies, likes and votes)
@@ -66,6 +66,7 @@ All of them live inside the Hopper workspace under **Settings**. The drawer in t
 - **Persona profile** - a timeline-only display name, handle, bio and location. It never rewrites the host persona.
 - **Connection** - which connection profile writes the posts. A cheap model is fine here; a separate one saves the roleplay connection for roleplay. Unset, it uses the current connection.
 - **How much each refresh makes** - caps for posts, replies, reposts and likes. Defaults are 8, 12, 4 and 18.
+- **One post at a time** - instead of one request for the whole batch, each request writes a single post (by the next character in turn, or a stranger) plus the reactions to it, and the timeline fills in as each one lands. More requests, but the first post shows up in seconds; Posts above is how many turns a refresh takes, and a couple of quiet turns in a row stop it early.
 - **Pictures** - off by default; uses the existing image generation.
 - **Voice** - the tone instructions, and the only part of the prompt that can be edited. The rules that keep the response parseable are not in there, so the voice can be rewritten freely without breaking a refresh.
 - **Feeding it back into chats** - carryover, off by default.

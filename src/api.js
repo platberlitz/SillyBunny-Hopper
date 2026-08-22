@@ -32,6 +32,8 @@ const EXTENSION_PROMPT_ROLE_SYSTEM = 0;
 
 const FEED_FILE = 'twitterlike-feed.json';
 const REFRESH_MAX_TOKENS = 4096;
+/** One post plus its reactions never needs a whole batch's worth of output. */
+const TURN_MAX_TOKENS = 1536;
 const PROFILE_MAX_TOKENS_BASE = 1024;
 
 // --- settings -------------------------------------------------------------
@@ -766,7 +768,7 @@ export async function generatePostImage(prompt, signal) {
  * re-check every quota locally before storing anything. The model is never trusted to have
  * obeyed the prompt.
  */
-export async function runRefresh({ sessionId = ensureActiveSession().id, feed, signal, onProgress = () => {} } = {}) {
+export async function runRefresh({ sessionId = ensureActiveSession().id, feed, signal, onProgress = () => {}, onPartial = () => {} } = {}) {
     const settings = getSettings();
     const session = settings.sessions[sessionId];
     if (!session) {
@@ -802,6 +804,17 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
     const freshPersona = freshAccounts.find(account => account.kind === KIND_PERSONA) ?? persona;
     const current = getSettings();
 
+    const newId = () => ctx().uuidv4();
+    const batch = {
+        sessionId, feed, signal, onProgress, onPartial,
+        accounts: freshAccounts, active: freshActive, persona: freshPersona, session, settings: current,
+        activeKeys, newId,
+    };
+
+    if (current.incremental) {
+        return runIncrementalRefresh(batch);
+    }
+
     onProgress('Writing posts...');
     const messages = buildRefreshMessages({
         accounts: freshAccounts,
@@ -815,26 +828,7 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         localTime: new Date().toLocaleString(),
         strangers: session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
     });
-
-    let parsed = null;
-    let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-        const attemptMessages = attempt === 0
-            ? messages
-            : [...messages, { role: 'user', content: buildCorrectionMessage(lastError, freshActive.map(a => a.handle)) }];
-        const raw = await runGeneration(attemptMessages, REFRESH_MAX_TOKENS, signal);
-        try {
-            parsed = parseRefreshResponse(raw);
-            break;
-        } catch (error) {
-            lastError = error.message;
-            if (attempt === 1) {
-                throw new Error(`The model did not return usable JSON (${error.message}).`);
-            }
-            onProgress('That came back malformed, asking again...');
-        }
-    }
-
+    const parsed = await generateBatch(messages, REFRESH_MAX_TOKENS, batch, { throwOnFailure: true });
     const result = materializeRefresh(parsed, {
         accounts: freshAccounts,
         // The prompt asks for active accounts only; this enforces it locally, so a
@@ -843,12 +837,46 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         settings: current,
         posts: feed.posts,
         interactions: feed.interactions,
-        newId: () => ctx().uuidv4(),
+        newId,
         now: Date.now(),
         strangerLimit: session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
     });
+    await commitBatch(result, batch);
+    updateSession(sessionId, { lastRefreshAt: Date.now() });
+    return result;
+}
 
-    if (current.images.enabled) {
+/** Asks the model once, retrying a malformed answer once with a correction. Null when it gives up and throwOnFailure is off. */
+async function generateBatch(messages, maxTokens, { signal, onProgress, active }, { throwOnFailure = false } = {}) {
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        const attemptMessages = attempt === 0
+            ? messages
+            : [...messages, { role: 'user', content: buildCorrectionMessage(lastError, active.map(a => a.handle)) }];
+        const raw = await runGeneration(attemptMessages, maxTokens, signal);
+        try {
+            return parseRefreshResponse(raw);
+        } catch (error) {
+            lastError = error.message;
+            if (attempt === 1) {
+                if (throwOnFailure) {
+                    throw new Error(`The model did not return usable JSON (${error.message}).`);
+                }
+                return null;
+            }
+            onProgress('That came back malformed, asking again...');
+        }
+    }
+    return null;
+}
+
+/**
+ * Draws any images, writes the whole future feed (the commit point), then mirrors the
+ * new rows into the in-memory feed and the session. Shared by the batch and the
+ * one-post-at-a-time paths so both persist the same way.
+ */
+async function commitBatch(result, { sessionId, feed, signal, onProgress, onPartial, settings }) {
+    if (settings.images.enabled) {
         const withPrompts = result.posts.filter(post => post.image?.prompt);
         for (const [index, post] of withPrompts.entries()) {
             signal?.throwIfAborted();
@@ -890,12 +918,98 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         for (const { actorKey, targetKey } of result.follows) {
             follows[actorKey] = [...new Set([...(follows[actorKey] ?? []), targetKey])];
         }
-        updateSession(sessionId, { follows, lastRefreshAt: Date.now() });
-    } else {
-        updateSession(sessionId, { lastRefreshAt: Date.now() });
+        updateSession(sessionId, { follows });
     }
 
-    return result;
+    onPartial(result);
+}
+
+/**
+ * One post per request: each turn names an author, takes exactly one post plus the
+ * reactions to it, commits it and shows it, then moves on. More requests, but the first
+ * post lands in seconds and the timeline fills in as it goes.
+ */
+async function runIncrementalRefresh(batch) {
+    const { sessionId, feed, signal, onProgress, accounts, active, persona, session, settings, activeKeys, newId } = batch;
+    const quotas = settings.quotas;
+    const total = Math.max(1, quotas.posts);
+    const remaining = { replies: quotas.replies, reposts: quotas.reposts, likes: quotas.likes };
+    let strangersLeft = session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0;
+    const cast = active.filter(account => account.kind === KIND_CHARACTER);
+    const all = { posts: [], interactions: [], follows: [], strangers: [], warnings: [] };
+    let emptyTurns = 0;
+    let liveAccounts = accounts;
+
+    for (let index = 1; index <= total; index += 1) {
+        signal?.throwIfAborted();
+        const author = cast.length ? cast[(index - 1) % cast.length] : null;
+        if (!author && strangersLeft <= 0 && !liveAccounts.some(account => account.kind === KIND_AMBIENT && activeKeys.has(account.key))) {
+            break;
+        }
+        onProgress(`Post ${index} of ${total}...`);
+        const turnSettings = { ...settings, quotas: { posts: 1, replies: remaining.replies, reposts: remaining.reposts, likes: remaining.likes } };
+        const messages = buildRefreshMessages({
+            accounts: liveAccounts,
+            active: liveAccounts.filter(account => activeKeys.has(account.key)),
+            persona,
+            session,
+            posts: feed.posts,
+            interactions: feed.interactions,
+            settings: turnSettings,
+            now: Date.now(),
+            localTime: new Date().toLocaleString(),
+            strangers: strangersLeft,
+            turn: { index, total, author, remaining },
+        });
+        const parsed = await generateBatch(messages, TURN_MAX_TOKENS, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
+        if (!parsed) {
+            all.warnings.push(`turn ${index}: the model did not return usable JSON, skipped`);
+            emptyTurns += 1;
+            if (emptyTurns >= 2) {
+                break;
+            }
+            continue;
+        }
+        const result = materializeRefresh(parsed, {
+            accounts: liveAccounts,
+            allowedActorKeys: [...activeKeys],
+            settings: turnSettings,
+            posts: feed.posts,
+            interactions: feed.interactions,
+            newId,
+            now: Date.now(),
+            strangerLimit: strangersLeft,
+        });
+        await commitBatch(result, batch);
+        for (const key of ['posts', 'interactions', 'follows', 'strangers', 'warnings']) {
+            all[key].push(...result[key]);
+        }
+        for (const item of result.interactions) {
+            if (item.type === 'reply') {
+                remaining.replies = Math.max(0, remaining.replies - 1);
+            } else if (item.type === 'repost') {
+                remaining.reposts = Math.max(0, remaining.reposts - 1);
+            } else {
+                remaining.likes = Math.max(0, remaining.likes - 1);
+            }
+        }
+        if (result.strangers.length) {
+            strangersLeft = Math.max(0, strangersLeft - result.strangers.length);
+            // New strangers join the cast for the rest of the refresh.
+            liveAccounts = await currentAccounts(sessionId);
+            for (const stranger of result.strangers) {
+                activeKeys.add(`${KIND_AMBIENT}:${stranger.id}`);
+            }
+        }
+        emptyTurns = result.posts.length || result.interactions.length ? 0 : emptyTurns + 1;
+        if (emptyTurns >= 2) {
+            all.warnings.push('two quiet turns in a row, stopped early');
+            break;
+        }
+    }
+
+    updateSession(sessionId, { lastRefreshAt: Date.now() });
+    return all;
 }
 
 // --- carryover ------------------------------------------------------------

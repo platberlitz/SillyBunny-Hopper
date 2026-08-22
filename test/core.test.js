@@ -30,6 +30,7 @@ import {
     MAX_NEW_STRANGERS_PER_REFRESH,
     normalizeStrangers,
     normalizeSession,
+    buildTurnInstruction,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -821,5 +822,20 @@ test('matchMentionAccounts ranks handle prefixes first and caps the list', () =>
 test('insertMention replaces the token and puts the caret after the inserted handle', () => {
     assert.deepEqual(insertMention('hello @ma there', 6, 9, 'mara_vell'), { text: 'hello @mara_vell  there', caret: 17 });
     assert.deepEqual(insertMention('@', 0, 1, 'otto_brand'), { text: '@otto_brand ', caret: 12 });
+});
+
+test('a rolling-refresh turn adds one instruction message naming the author and the remaining budget', () => {
+    const accounts = deriveAccounts({ characters: [{ avatar: 'a.png', name: 'Ada' }], invited: ['a.png'], persona: { entityId: 'me.png', name: 'Me' } });
+    const base = { accounts, active: accounts.filter(a => a.kind === 'character'), persona: accounts[0], session: null, posts: [], interactions: [], settings: settings(), now: 1, localTime: 'x' };
+    const plain = buildRefreshMessages(base);
+    const turn = buildRefreshMessages({ ...base, turn: { index: 2, total: 5, author: accounts[1], remaining: { replies: 7, reposts: 2, likes: 10 } } });
+    assert.equal(plain.length, 3);
+    assert.equal(turn.length, 4);
+    assert.match(turn[2].content, /Post 2 of 5/);
+    assert.match(turn[2].content, /as @ada only/);
+    assert.match(turn[2].content, /replies 7, reposts 2, likes 10/);
+    assert.match(buildTurnInstruction({ index: 1, total: 1, author: null }), /as a stranger/);
+    assert.equal(normalizeSettings({ incremental: true }).incremental, true);
+    assert.equal(normalizeSettings({}).incremental, false);
 });
 

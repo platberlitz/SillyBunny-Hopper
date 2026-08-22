@@ -47,6 +47,8 @@ export const DEFAULTS = Object.freeze({
     ambient: false,
     profileId: '',
     quotas: { posts: 8, replies: 12, reposts: 4, likes: 18 },
+    /** One post per request, committed and shown as each lands, instead of one batch. */
+    incremental: false,
     active: { mode: 'range', min: 2, max: 5, count: 3 },
     images: { enabled: false, perRefresh: 3, instructions: '' },
     polls: true,
@@ -227,6 +229,7 @@ export function normalizeSettings(raw) {
             instructions: typeof images.instructions === 'string' ? images.instructions.slice(0, 4000) : '',
         },
         polls: source.polls !== false,
+        incremental: source.incremental === true,
         tone: typeof source.tone === 'string' ? source.tone.slice(0, 8000) : '',
         carry: {
             enabled: carry.enabled === true,
@@ -693,10 +696,25 @@ export function buildFormatMessage() {
     return ['# JSON Output Format', JSON.stringify(OUTPUT_SHAPE, null, 2)].join('\n');
 }
 
-export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0 }) {
+/** One step of a rolling refresh: exactly one post by the named author, plus the reactions to it. */
+export function buildTurnInstruction({ index = 1, total = 1, author = null, remaining = {} } = {}) {
+    const who = author?.handle
+        ? `Write exactly one new post, as @${author.handle} only - no posts by anyone else.`
+        : 'Write exactly one new post, as a stranger (new or already around) - no posts by the cast.';
+    return [
+        '# This Turn',
+        `Post ${index} of ${total} in a rolling refresh; earlier posts from this refresh are already in the timeline above.`,
+        who,
+        'Then add reactions from the other active accounts: replies, likes, reposts and poll votes on this new post and, where it is natural, on the recent posts above. Do not add reactions that repeat what an account already said.',
+        `Remaining for the rest of this refresh: replies ${remaining.replies ?? 0}, reposts ${remaining.reposts ?? 0}, likes ${remaining.likes ?? 0}. Stay well under them; the later turns need room too.`,
+    ].join('\n');
+}
+
+export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0, turn = null }) {
     return [
         { role: 'system', content: buildSystemPrompt(settings) },
         { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers }) },
+        ...(turn ? [{ role: 'user', content: buildTurnInstruction(turn) }] : []),
         { role: 'user', content: buildFormatMessage() },
     ];
 }

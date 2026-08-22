@@ -526,6 +526,42 @@ test('a refresh stores posts and interactions and stamps lastRefreshAt', async (
     assert.ok(getSession(ensureActiveSession().id).lastRefreshAt > 0);
 });
 
+test('one post at a time: one request per post, each committed and shown as it lands', async () => {
+    updateSettings({ incremental: true, quotas: { posts: 3, replies: 6, reposts: 2, likes: 9 }, profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+    const feed = emptyFeed();
+    const seen = [];
+    const turns = [];
+    current.generateRaw = async ({ prompt }) => {
+        const match = /as @(\w+) only/.exec(prompt);
+        const author = match ? match[1] : 'ada';
+        turns.push({ author, quotaLine: (/posts: at most (\d+)/.exec(prompt) || [])[1], turnLine: (/Post (\d) of (\d)/.exec(prompt) || []).slice(1, 3).join('/') });
+        return JSON.stringify({
+            posts: [{ tempId: 't', authorHandle: author, content: `post by ${author} #${turns.length}` }, { tempId: 'extra', authorHandle: author, content: 'a second post that must be dropped' }],
+            interactions: [{ actorHandle: author === 'ada' ? 'bo' : 'ada', type: 'reply', targetTempId: 't', content: `reply ${turns.length}` }],
+            follows: [],
+        });
+    };
+    const result = await runRefresh({ feed, onPartial: () => seen.push(feed.posts.length) });
+    assert.equal(turns.length, 3, 'one request per post');
+    assert.deepEqual(turns.map(t => t.author), ['ada', 'bo', 'ada'], 'authors rotate');
+    assert.deepEqual(turns.map(t => t.quotaLine), ['1', '1', '1'], 'each turn is told one post');
+    assert.deepEqual(turns.map(t => t.turnLine), ['1/3', '2/3', '3/3']);
+    assert.deepEqual(seen, [1, 2, 3], 'the feed is shown after every committed post');
+    assert.equal(result.posts.length, 3);
+    assert.equal(result.interactions.length, 3);
+    assert.equal(feed.posts.length, 3);
+    assert.ok(getSession(ensureActiveSession().id).lastRefreshAt > 0);
+
+    // a malformed turn is skipped, not fatal
+    let calls = 0;
+    current.generateRaw = async () => { calls += 1; return calls <= 2 ? 'not json' : JSON.stringify({ posts: [{ authorHandle: 'ada', content: `late ${calls}` }], interactions: [], follows: [] }); };
+    const feed2 = emptyFeed();
+    const result2 = await runRefresh({ feed: feed2 });
+    assert.ok(result2.warnings.some(w => /skipped/.test(w)));
+    assert.ok(feed2.posts.length >= 1);
+    updateSettings({ incremental: false });
+});
+
 test('a refresh commits only to the session it started with', async () => {
     const first = ensureActiveSession();
     const second = createSession({ personaId: 'me.png', invited: ['bo.png'] });
