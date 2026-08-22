@@ -1,0 +1,15 @@
+{
+  "name": "sillybunny-twitterlike",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0",
+  "type": "module",
+  "scripts": {
+    "lint": "node scripts/lint.js",
+    "test": "npm run lint && node --test",
+    "test:unit": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

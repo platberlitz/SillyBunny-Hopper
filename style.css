@@ -1,0 +1,674 @@
+/*
+ * Everything is prefixed sbtw- and scoped to .sbtw-shell, so nothing leaks into the host.
+ * Colours come from the host's own theme tokens rather than being hardcoded, which is what
+ * makes light and dark work without a second palette. The --sb-* tokens are SillyBunny's
+ * and do not exist in every theme, so each one carries a fallback chain.
+ */
+
+/* --- full screen shell -------------------------------------------------- */
+
+/*
+ * The host has no fullscreen popup option - `large` tops out at 90% - so the feed sizes
+ * itself. It fills everything below the top bar, which stays visible above the backdrop.
+ */
+dialog.popup.sbtw-popup {
+    --sbtw-topbar: var(--topBarBlockSize, 54px);
+    inset: 0;
+    width: 100dvw;
+    max-width: 100dvw;
+    height: calc(100dvh - var(--sbtw-topbar));
+    max-height: calc(100dvh - var(--sbtw-topbar));
+    min-height: 0;
+    margin: var(--sbtw-topbar) 0 0 0;
+    padding: 0;
+    border-radius: 0;
+    border-inline: none;
+    border-block-end: none;
+}
+
+dialog.popup.sbtw-popup::backdrop {
+    /* Don't blur the app behind it - the point is that the top bar stays readable. */
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: color-mix(in srgb, black 30%, transparent);
+}
+
+dialog.popup.sbtw-popup .popup-body,
+dialog.popup.sbtw-popup .popup-content {
+    height: 100%;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+dialog.popup.sbtw-popup .popup-button-close {
+    z-index: 3;
+}
+
+.sbtw-shell {
+    --sbtw-accent: var(--color-primary, var(--sb-accent, var(--SmartThemeQuoteColor, #7ea7ff)));
+    --sbtw-divider: var(--SmartThemeBorderColor, color-mix(in srgb, currentColor 20%, transparent));
+    --sbtw-muted: color-mix(in srgb, currentColor 60%, transparent);
+    --sbtw-hover: color-mix(in srgb, currentColor 6%, transparent);
+    --sbtw-gap: calc(var(--mainFontSize, 15px) * 0.75);
+
+    display: grid;
+    grid-template-columns: 13rem minmax(0, 42rem) 17rem;
+    justify-content: center;
+    gap: var(--sbtw-gap);
+    align-items: stretch;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 var(--sbtw-gap);
+    font-size: var(--mainFontSize, 15px);
+    text-align: left;
+}
+
+/* Each column scrolls on its own, the way the real thing does. */
+.sbtw-nav,
+.sbtw-main,
+.sbtw-rail {
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+@media (max-width: 1100px) {
+    .sbtw-shell {
+        grid-template-columns: 3.5rem minmax(0, 1fr);
+        justify-content: stretch;
+    }
+
+    .sbtw-shell .sbtw-rail {
+        display: none;
+    }
+
+    .sbtw-shell .sbtw-nav-item span {
+        display: none;
+    }
+}
+
+@media (max-width: 620px) {
+    .sbtw-shell {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        justify-content: stretch;
+    }
+
+    .sbtw-shell .sbtw-nav {
+        height: auto;
+        overflow: visible;
+        flex-direction: row;
+        justify-content: space-around;
+        padding-right: 0;
+        border-right: none;
+        border-bottom: 1px solid var(--sbtw-divider);
+    }
+
+    .sbtw-shell .sbtw-nav-item span {
+        display: none;
+    }
+}
+
+/* --- navigation --------------------------------------------------------- */
+
+.sbtw-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding-right: var(--sbtw-gap);
+    border-right: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.55rem 0.75rem;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    font-size: 1em;
+    text-align: left;
+    cursor: pointer;
+    min-height: var(--sb-control-min-height, 2.2rem);
+}
+
+.sbtw-nav-item:hover {
+    background: var(--sbtw-hover);
+}
+
+.sbtw-nav-on {
+    font-weight: 700;
+    color: var(--sbtw-accent);
+}
+
+/* --- timeline ----------------------------------------------------------- */
+
+.sbtw-main {
+    min-width: 0;
+}
+
+.sbtw-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-tab {
+    flex: 1;
+    padding: 0.7rem 0.5rem;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--sbtw-muted);
+    font-size: 1em;
+    cursor: pointer;
+}
+
+.sbtw-tab:hover {
+    background: var(--sbtw-hover);
+}
+
+.sbtw-tab-on {
+    color: inherit;
+    font-weight: 700;
+    border-bottom-color: var(--sbtw-accent);
+}
+
+.sbtw-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.sbtw-post {
+    padding: var(--sbtw-gap) 0;
+    border-bottom: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-post-row {
+    display: flex;
+    gap: var(--sbtw-gap);
+    align-items: flex-start;
+}
+
+.sbtw-post-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.sbtw-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.sbtw-name {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-weight: 700;
+    font-size: 1em;
+    cursor: pointer;
+}
+
+.sbtw-name:hover {
+    text-decoration: underline;
+}
+
+.sbtw-name-big {
+    font-size: 1.25em;
+}
+
+.sbtw-handle,
+.sbtw-time,
+.sbtw-hint,
+.sbtw-counts,
+.sbtw-location,
+.sbtw-replying,
+.sbtw-poll-total {
+    color: var(--sbtw-muted);
+    font-size: 0.85em;
+}
+
+.sbtw-body {
+    /* Post bodies are inserted as text nodes, so newlines need preserving here. */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin: 0.25rem 0;
+}
+
+.sbtw-mention {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--sbtw-accent);
+    font: inherit;
+    cursor: pointer;
+}
+
+.sbtw-delete {
+    margin-left: auto;
+    border: none;
+    background: transparent;
+    color: var(--sbtw-muted);
+    cursor: pointer;
+}
+
+/* --- avatars ------------------------------------------------------------ */
+
+.sbtw-avatar {
+    flex: 0 0 auto;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--sbtw-hover);
+}
+
+.sbtw-avatar-sm { width: 2rem; height: 2rem; }
+.sbtw-avatar-md { width: 2.75rem; height: 2.75rem; }
+.sbtw-avatar-lg { width: 4.5rem; height: 4.5rem; }
+
+.sbtw-avatar-initials {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.8em;
+    color: #fff;
+    background: hsl(var(--sbtw-avatar-hue, 210) 45% 45%);
+}
+
+/* --- actions ------------------------------------------------------------ */
+
+.sbtw-actions {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 0.5rem;
+    max-width: 22rem;
+}
+
+.sbtw-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.4rem;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--sbtw-muted);
+    font-size: 0.9em;
+    cursor: pointer;
+    transition: color 120ms cubic-bezier(0.22, 1, 0.36, 1), transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.sbtw-action:hover:not(:disabled) {
+    color: var(--sbtw-accent);
+    background: var(--sbtw-hover);
+}
+
+.sbtw-action:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.sbtw-action-on {
+    color: var(--sbtw-accent);
+    transform: scale(1.05);
+}
+
+.sbtw-action-count {
+    font-variant-numeric: tabular-nums;
+}
+
+/* --- replies ------------------------------------------------------------ */
+
+.sbtw-replies {
+    margin-top: 0.6rem;
+    padding-left: 0.5rem;
+    border-left: 2px solid var(--sbtw-divider);
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.sbtw-reply {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.sbtw-reply-main {
+    min-width: 0;
+}
+
+/* --- composer ----------------------------------------------------------- */
+
+.sbtw-composer,
+.sbtw-reply-composer {
+    padding: var(--sbtw-gap) 0;
+    border-bottom: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-input {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid var(--sbtw-divider);
+    border-radius: 0.5rem;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    resize: vertical;
+}
+
+.sbtw-composer-input {
+    border: none;
+    padding-left: 0;
+}
+
+.sbtw-number {
+    width: 6rem;
+}
+
+.sbtw-composer-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.sbtw-spacer {
+    flex: 1;
+}
+
+.sbtw-attachment img,
+.sbtw-image img {
+    max-width: 100%;
+    max-height: 24rem;
+    border-radius: 0.75rem;
+    object-fit: cover;
+}
+
+.sbtw-image {
+    display: block;
+    padding: 0;
+    margin-top: 0.5rem;
+    border: none;
+    background: transparent;
+    cursor: zoom-in;
+}
+
+.sbtw-viewer {
+    display: block;
+    max-width: 100%;
+    max-height: 80vh;
+    margin: 0 auto;
+}
+
+/* --- polls -------------------------------------------------------------- */
+
+.sbtw-poll {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin: 0.5rem 0;
+}
+
+.sbtw-poll-question {
+    font-weight: 600;
+}
+
+.sbtw-poll-option {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--sbtw-divider);
+    border-radius: 0.5rem;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+}
+
+.sbtw-poll-bar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: var(--sbtw-poll-share, 0%);
+    background: color-mix(in srgb, var(--sbtw-accent) 22%, transparent);
+    transition: width 200ms cubic-bezier(0.22, 1, 0.36, 1);
+    pointer-events: none;
+}
+
+.sbtw-poll-text,
+.sbtw-poll-share {
+    position: relative;
+}
+
+.sbtw-poll-share {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+}
+
+.sbtw-poll-mine {
+    border-color: var(--sbtw-accent);
+    font-weight: 600;
+}
+
+.sbtw-poll-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+}
+
+/* --- buttons ------------------------------------------------------------ */
+
+.sbtw-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--sbtw-divider);
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    min-height: var(--sb-control-min-height, 2rem);
+}
+
+.sbtw-btn:hover:not(:disabled) {
+    background: var(--sbtw-hover);
+}
+
+.sbtw-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.sbtw-btn-primary {
+    border-color: transparent;
+    background: var(--sbtw-accent);
+    /* The host defines --sb-accent but not a matching foreground, so this needs a real
+       colour rather than currentColor, which would vanish into the accent. */
+    color: canvas;
+    font-weight: 700;
+}
+
+.sbtw-btn-danger {
+    border-color: color-mix(in srgb, red 40%, var(--sbtw-divider));
+    color: color-mix(in srgb, red 70%, currentColor);
+}
+
+.sbtw-refresh-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: var(--sbtw-gap) 0;
+    border-bottom: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-status {
+    color: var(--sbtw-muted);
+    font-size: 0.85em;
+}
+
+/* --- profile, notifications, rail --------------------------------------- */
+
+.sbtw-profile-head {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sbtw-gap);
+    padding: var(--sbtw-gap) 0;
+    border-bottom: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-profile-meta {
+    flex: 1;
+    min-width: 0;
+}
+
+.sbtw-bio {
+    margin: 0.3rem 0;
+}
+
+.sbtw-section > summary {
+    padding: 0.6rem 0;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.sbtw-notification {
+    display: flex;
+    gap: 0.6rem;
+    width: 100%;
+    padding: 0.6rem 0;
+    border: none;
+    border-bottom: 1px solid var(--sbtw-divider);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.sbtw-notification:hover {
+    background: var(--sbtw-hover);
+}
+
+.sbtw-rail {
+    padding-left: var(--sbtw-gap);
+    border-left: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-rail h4 {
+    margin: 0 0 0.5rem;
+}
+
+.sbtw-suggestion {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0;
+}
+
+.sbtw-suggestion-meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+.sbtw-suggestion-meta .sbtw-name,
+.sbtw-suggestion-meta .sbtw-handle {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sbtw-empty {
+    padding: 2rem 1rem;
+    text-align: center;
+    color: var(--sbtw-muted);
+}
+
+/* --- settings ----------------------------------------------------------- */
+
+.sbtw-settings h3 {
+    margin: 1.2rem 0 0.4rem;
+    padding-bottom: 0.2rem;
+    border-bottom: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin: 0.5rem 0;
+}
+
+.sbtw-field-label {
+    font-weight: 600;
+}
+
+.sbtw-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.sbtw-check {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.35rem 0;
+    cursor: pointer;
+}
+
+.sbtw-invites {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    max-height: 14rem;
+    overflow-y: auto;
+    padding: 0.4rem;
+    border: 1px solid var(--sbtw-divider);
+    border-radius: 0.5rem;
+}
+
+/* --- focus and motion --------------------------------------------------- */
+
+.sbtw-shell :focus-visible,
+.sbtw-drawer :focus-visible {
+    outline: 2px solid var(--sb-focus-ring, var(--sbtw-accent));
+    outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sbtw-action,
+    .sbtw-poll-bar {
+        transition: none;
+    }
+
+    .sbtw-action-on {
+        transform: none;
+    }
+}
+
+body.reduced-motion .sbtw-action,
+body.reduced-motion .sbtw-poll-bar {
+    transition: none;
+}
+
+body.reduced-motion .sbtw-action-on {
+    transform: none;
+}
