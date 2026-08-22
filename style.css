@@ -5,124 +5,116 @@
  * and do not exist in every theme, so each one carries a fallback chain.
  */
 
-/* --- launch button, in the Character Menu header ------------------------ */
+/* --- launch button, integrated into the Character Menu mode pill -------- */
 
-/*
- * Sits beside the Roleplay/Conversation picker. The picker and the close button are both
- * absolutely positioned against the header, so this is too. Its top, right offset and size
- * are all measured from the picker in src/ui.js rather than hardcoded: the picker moves and
- * resizes at several breakpoints, so any fixed number is only right at one width.
- */
+/* The action stays outside the radiogroup in the DOM. Extra right padding on the native
+ * pill makes it look like the third control without giving a non-mode action radio semantics. */
+#right-nav-panel.openDrawer > .sb-character-shell-header .sb-character-shell-mode-toggle:has(+ .sbtw-launch) {
+    padding-right: 99px;
+}
+
 .sbtw-launch {
     position: absolute;
-    top: var(--sbtw-launch-top, 18px);
-    right: var(--sbtw-launch-right, 274px);
-    display: inline-flex;
-    align-items: center;
+    top: 22px;
+    right: 70px;
+    width: 92px;
+    min-width: 92px;
+    min-height: 32px;
+    padding: 8px 11px;
     justify-content: center;
-    width: var(--sbtw-launch-size, 40px);
-    height: var(--sbtw-launch-size, 40px);
-    padding: 0;
-    border: 1px solid color-mix(in srgb, var(--sb-shell-border, var(--SmartThemeBorderColor)) 88%, transparent);
-    border-radius: 999px;
-    background: transparent;
-    color: var(--SmartThemeBodyColor, currentColor);
-    cursor: pointer;
-    z-index: 1;
-    transition: background var(--sb-transition-fast, 120ms) ease, color var(--sb-transition-fast, 120ms) ease;
+    opacity: 0.78;
+    z-index: 2;
 }
 
-.sbtw-launch:hover,
-.sbtw-launch:focus-visible {
-    background: color-mix(in srgb, var(--sb-shell-surface, var(--SmartThemeBlurTintColor)) 70%, transparent);
-    color: var(--sb-accent, var(--SmartThemeQuoteColor));
+.sbtw-launch span {
+    display: inline;
 }
 
-.sbtw-launch:focus-visible {
-    outline: 2px solid var(--sb-focus-ring, var(--sb-accent, currentColor));
-    outline-offset: 2px;
-}
-
-/*
- * The header reserves right padding for the controls that float over it. Ours adds another
- * 48px, so the title and subtitle need to stop that much earlier or the text runs under it.
- * Matching the host's own selector specificity is what makes this stick.
- */
-#right-nav-panel.openDrawer > .sb-character-shell-header:has(> .sbtw-launch) {
-    padding-right: calc(var(--sb-shell-panel-padding-inline) + 100px);
+@media screen and (min-width: 901px) {
+    #right-nav-panel.openDrawer > .sb-character-shell-header:has(> .sbtw-launch) :is(.sb-shell-title, .sb-shell-subtitle) {
+        max-width: calc(100% - 374px);
+    }
 }
 
 @media (max-width: 900px) {
-    #right-nav-panel.openDrawer > .sb-character-shell-header:has(> .sbtw-launch) {
-        padding-right: calc(var(--sb-shell-panel-padding-inline) + 166px);
+    #right-nav-panel.openDrawer > .sb-character-shell-header .sb-character-shell-mode-toggle:has(+ .sbtw-launch) {
+        padding-right: 93px;
     }
-}
 
-body.reduced-motion .sbtw-launch {
-    transition: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
     .sbtw-launch {
-        transition: none;
+        top: 20px;
+        right: 69px;
+        width: 88px;
+        min-width: 88px;
+        min-height: 34px;
+        padding: 8px 9px;
+    }
+
+    #right-nav-panel.openDrawer > .sb-character-shell-header:has(> .sbtw-launch) {
+        padding-right: calc(var(--sb-shell-panel-padding-inline) + 218px);
     }
 }
 
-/* --- full screen shell -------------------------------------------------- */
+@media (max-width: 768px) {
+    #right-nav-panel.openDrawer > .sb-character-shell-header .sb-character-shell-mode-toggle:has(+ .sbtw-launch) {
+        padding-right: 93px;
+    }
 
-/*
- * The host has no fullscreen popup option - `large` tops out at 90% - so the feed sizes
- * itself. It fills everything below the top bar, which stays visible above the backdrop.
- */
-dialog.popup.sbtw-popup {
-    --sbtw-topbar: var(--topBarBlockSize, 54px);
-    inset: 0;
+    .sbtw-launch {
+        top: 12px;
+        right: 60px;
+        min-height: 36px;
+    }
+}
+
+/* --- chat workspace ----------------------------------------------------- */
+
+/* Twitlike takes over the native chat workspace, just like Conversation Mode. The top bar
+ * remains outside this element and stays fully interactive. */
+#sheld[data-sbtw-mode='on'] {
+    display: block;
     width: 100dvw;
     max-width: 100dvw;
-    height: calc(100dvh - var(--sbtw-topbar));
-    max-height: calc(100dvh - var(--sbtw-topbar));
-    min-height: 0;
-    margin: var(--sbtw-topbar) 0 0 0;
-    padding: 0;
-    border-radius: 0;
-    border-inline: none;
-    border-block-end: none;
-}
-
-dialog.popup.sbtw-popup::backdrop {
-    /*
-     * Don't blur the app behind it - the point is that the top bar stays readable. The
-     * !important is not decoration: the Moonlit theme sets backdrop-filter with !important
-     * on .popup[open]::backdrop, and matching specificity alone does not beat that.
-     */
-    backdrop-filter: none !important;
-    -webkit-backdrop-filter: none !important;
-    background-color: color-mix(in srgb, black 30%, transparent);
-}
-
-dialog.popup.sbtw-popup .popup-body,
-dialog.popup.sbtw-popup .popup-content {
-    height: 100%;
-    min-height: 0;
+    left: 0 !important;
+    right: 0 !important;
     margin: 0;
-    padding: 0;
-    /* Same reason: Moonlit forces overflow-y: auto !important on .popup-content, which
-       would wrap columns that already scroll themselves in a second scrollbar. */
-    overflow: hidden !important;
+    resize: none;
+    overflow: hidden;
 }
 
-dialog.popup.sbtw-popup .popup-button-close {
-    z-index: 3;
+#sheld[data-sbtw-mode='on'] > :not(.sbtw-shell) {
+    display: none !important;
 }
 
-/* The extensions drawer lives outside the shell, so both scopes need the tokens. */
+/* The workspace and extensions drawer live outside the shell, so all scopes need tokens. */
+#sheld[data-sbtw-mode='on'],
 .sbtw-shell,
 .sbtw-drawer {
-    --sbtw-accent: var(--color-primary, var(--sb-accent, var(--SmartThemeQuoteColor, #7ea7ff)));
-    --sbtw-divider: var(--SmartThemeBorderColor, color-mix(in srgb, currentColor 20%, transparent));
-    --sbtw-muted: color-mix(in srgb, currentColor 60%, transparent);
-    --sbtw-hover: color-mix(in srgb, currentColor 6%, transparent);
+    --sbtw-text: var(--color-text, var(--SmartThemeBodyColor, CanvasText));
+    --sbtw-surface: var(--sb-shell-main-bg, var(--color-surface, var(--SmartThemeBlurTintColor, Canvas)));
+    --sbtw-nav-surface: var(--sb-shell-nav-bg, var(--sbtw-surface));
+    --sbtw-raised: var(--color-surface-strong, var(--sb-surface-elevated, var(--sbtw-surface)));
+    --sbtw-control: var(--sb-input-bg, var(--sb-button-bg, var(--sbtw-raised)));
+    --sbtw-accent: var(--color-primary, var(--sb-accent, var(--SmartThemeQuoteColor, currentColor)));
+    --sbtw-divider: var(--sb-shell-border, var(--color-border, var(--SmartThemeBorderColor, currentColor)));
+    --sbtw-control-border: var(--sb-input-border, var(--sbtw-divider));
+    --sbtw-muted: var(--sb-muted-fg, var(--color-text-secondary, color-mix(in srgb, var(--sbtw-text) 68%, transparent)));
+    --sbtw-hover: var(--sb-button-hover, var(--color-surface-hover, color-mix(in srgb, var(--sbtw-text) 7%, var(--sbtw-surface))));
+    --sbtw-active-bg: var(--sb-state-active-bg, color-mix(in srgb, var(--sbtw-accent) 16%, var(--sbtw-control)));
+    --sbtw-active-border: var(--sb-state-active-border, color-mix(in srgb, var(--sbtw-accent) 50%, var(--sbtw-divider)));
+    --sbtw-danger: var(--color-danger, var(--sb-color-danger, var(--sb-color-error, currentColor)));
+    --sbtw-danger-bg: var(--sb-warning-bg, color-mix(in srgb, var(--sbtw-danger) 12%, var(--sbtw-surface)));
+    --sbtw-danger-border: var(--sb-warning-border, color-mix(in srgb, var(--sbtw-danger) 42%, var(--sbtw-divider)));
+    --sbtw-focus: var(--sb-focus-ring, var(--color-focus-ring, var(--sbtw-accent)));
+    --sbtw-radius-sm: var(--sb-radius-sm, 0.625rem);
+    --sbtw-radius-button: var(--sb-radius-button, 0.875rem);
+    --sbtw-transition: var(--sb-transition-fast, 180ms cubic-bezier(0.22, 1, 0.36, 1));
     --sbtw-gap: calc(var(--mainFontSize, 15px) * 0.75);
+}
+
+#sheld[data-sbtw-mode='on'] {
+    background: var(--sbtw-surface);
+    color: var(--sbtw-text);
 }
 
 .sbtw-shell {
@@ -133,11 +125,29 @@ dialog.popup.sbtw-popup .popup-button-close {
     align-items: stretch;
     width: 100%;
     height: 100%;
+    max-height: 100%;
+    flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
     padding: 0 var(--sbtw-gap);
+    background: var(--sbtw-surface);
+    color: var(--sbtw-text);
     font-size: var(--mainFontSize, 15px);
     text-align: left;
+}
+
+.sbtw-shell-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sbtw-gap);
+    padding: 2rem;
+    text-align: center;
+}
+
+.sbtw-shell [hidden] {
+    display: none !important;
 }
 
 /* Each column scrolls on its own, the way the real thing does. */
@@ -192,6 +202,7 @@ dialog.popup.sbtw-popup .popup-button-close {
     gap: 0.25rem;
     padding-right: var(--sbtw-gap);
     border-right: 1px solid var(--sbtw-divider);
+    background: var(--sbtw-nav-surface);
 }
 
 .sbtw-nav-item {
@@ -207,6 +218,7 @@ dialog.popup.sbtw-popup .popup-button-close {
     text-align: left;
     cursor: pointer;
     min-height: var(--sb-control-min-height, 2.2rem);
+    transition: background var(--sbtw-transition), color var(--sbtw-transition);
 }
 
 .sbtw-nav-item:hover {
@@ -238,6 +250,7 @@ dialog.popup.sbtw-popup .popup-button-close {
     color: var(--sbtw-muted);
     font-size: 1em;
     cursor: pointer;
+    transition: background var(--sbtw-transition), border-color var(--sbtw-transition), color var(--sbtw-transition);
 }
 
 .sbtw-tab:hover {
@@ -350,8 +363,9 @@ dialog.popup.sbtw-popup .popup-button-close {
     justify-content: center;
     font-weight: 700;
     font-size: 0.8em;
-    color: #fff;
-    background: hsl(var(--sbtw-avatar-hue, 210) 45% 45%);
+    color: var(--sbtw-text);
+    background: var(--sbtw-active-bg);
+    border: 1px solid var(--sbtw-active-border);
 }
 
 /* --- actions ------------------------------------------------------------ */
@@ -374,7 +388,7 @@ dialog.popup.sbtw-popup .popup-button-close {
     color: var(--sbtw-muted);
     font-size: 0.9em;
     cursor: pointer;
-    transition: color 120ms cubic-bezier(0.22, 1, 0.36, 1), transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition: background var(--sbtw-transition), color var(--sbtw-transition), transform var(--sbtw-transition);
 }
 
 .sbtw-action:hover:not(:disabled) {
@@ -427,12 +441,18 @@ dialog.popup.sbtw-popup .popup-button-close {
 .sbtw-input {
     width: 100%;
     padding: 0.5rem;
-    border: 1px solid var(--sbtw-divider);
-    border-radius: 0.5rem;
-    background: transparent;
+    border: 1px solid var(--sbtw-control-border);
+    border-radius: var(--sbtw-radius-sm);
+    background: var(--sbtw-control);
     color: inherit;
     font: inherit;
     resize: vertical;
+    transition: background var(--sbtw-transition), border-color var(--sbtw-transition);
+}
+
+.sbtw-input:hover,
+.sbtw-input:focus {
+    border-color: var(--sbtw-accent);
 }
 
 .sbtw-composer-input {
@@ -514,7 +534,7 @@ dialog.popup.sbtw-popup .popup-button-close {
     inset: 0 auto 0 0;
     width: var(--sbtw-poll-share, 0%);
     background: color-mix(in srgb, var(--sbtw-accent) 22%, transparent);
-    transition: width 200ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition: width var(--sb-transition, 240ms cubic-bezier(0.22, 1, 0.36, 1));
     pointer-events: none;
 }
 
@@ -547,17 +567,19 @@ dialog.popup.sbtw-popup .popup-button-close {
     align-items: center;
     gap: 0.4rem;
     padding: 0.4rem 0.9rem;
-    border: 1px solid var(--sbtw-divider);
-    border-radius: 999px;
-    background: transparent;
+    border: 1px solid var(--sbtw-control-border);
+    border-radius: var(--sbtw-radius-button);
+    background: var(--sb-button-bg, var(--sbtw-control));
     color: inherit;
     font: inherit;
     cursor: pointer;
     min-height: var(--sb-control-min-height, 2rem);
+    transition: background var(--sbtw-transition), border-color var(--sbtw-transition), color var(--sbtw-transition), transform var(--sbtw-transition);
 }
 
 .sbtw-btn:hover:not(:disabled) {
     background: var(--sbtw-hover);
+    border-color: var(--sbtw-accent);
 }
 
 .sbtw-btn:disabled {
@@ -566,17 +588,16 @@ dialog.popup.sbtw-popup .popup-button-close {
 }
 
 .sbtw-btn-primary {
-    border-color: transparent;
-    background: var(--sbtw-accent);
-    /* The host defines --sb-accent but not a matching foreground, so this needs a real
-       colour rather than currentColor, which would vanish into the accent. */
-    color: canvas;
+    border-color: var(--sbtw-active-border);
+    background: var(--sbtw-active-bg);
+    color: var(--sbtw-text);
     font-weight: 700;
 }
 
 .sbtw-btn-danger {
-    border-color: color-mix(in srgb, red 40%, var(--sbtw-divider));
-    color: color-mix(in srgb, red 70%, currentColor);
+    border-color: var(--sbtw-danger-border);
+    background: var(--sbtw-danger-bg);
+    color: var(--sbtw-danger);
 }
 
 .sbtw-refresh-bar {
@@ -640,6 +661,7 @@ dialog.popup.sbtw-popup .popup-button-close {
 .sbtw-rail {
     padding-left: var(--sbtw-gap);
     border-left: 1px solid var(--sbtw-divider);
+    background: var(--sbtw-nav-surface);
 }
 
 .sbtw-rail h4 {
@@ -692,6 +714,19 @@ dialog.popup.sbtw-popup .popup-button-close {
     font-weight: 600;
 }
 
+.sbtw-field-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.sbtw-invite-count,
+.sbtw-invite-empty {
+    color: var(--sbtw-muted);
+    font-size: 0.85em;
+}
+
 .sbtw-row {
     display: flex;
     flex-wrap: wrap;
@@ -709,19 +744,57 @@ dialog.popup.sbtw-popup .popup-button-close {
 .sbtw-invites {
     display: flex;
     flex-direction: column;
-    gap: 0.1rem;
-    max-height: 14rem;
+    gap: 0.15rem;
+    max-height: min(22rem, 45dvh);
     overflow-y: auto;
-    padding: 0.4rem;
-    border: 1px solid var(--sbtw-divider);
-    border-radius: 0.5rem;
+    overscroll-behavior: contain;
+    padding: 0.35rem;
+    border: 1px solid var(--sbtw-control-border);
+    border-radius: var(--sbtw-radius-sm);
+    background: var(--sbtw-raised);
+}
+
+.sbtw-character-search {
+    min-height: var(--sb-field-min-height, 2.75rem);
+}
+
+.sbtw-invite {
+    min-height: var(--sb-control-min-height, 2.5rem);
+    margin: 0;
+    padding: 0.35rem 0.45rem;
+    border: 1px solid transparent;
+    border-radius: var(--sbtw-radius-sm);
+    transition: background var(--sbtw-transition), border-color var(--sbtw-transition);
+    content-visibility: auto;
+    contain-intrinsic-size: auto 3rem;
+}
+
+.sbtw-invite:hover {
+    border-color: var(--sbtw-divider);
+    background: var(--sbtw-hover);
+}
+
+.sbtw-invite:has(input:checked) {
+    border-color: var(--sbtw-active-border);
+    background: var(--sbtw-active-bg);
+}
+
+.sbtw-invite > span:last-child {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.sbtw-invite-empty {
+    margin: 0;
+    padding: 1rem 0.75rem;
+    text-align: center;
 }
 
 /* --- focus and motion --------------------------------------------------- */
 
 .sbtw-shell :focus-visible,
 .sbtw-drawer :focus-visible {
-    outline: 2px solid var(--sb-focus-ring, var(--sbtw-accent));
+    outline: 2px solid var(--sbtw-focus);
     outline-offset: 2px;
 }
 

@@ -1,4 +1,4 @@
-# SillyBunny TwitterLike
+# SillyBunny Twitlike
 
 A pretend social timeline for your own cast. Your persona and the characters you invite each get an account, and pressing **Refresh** hands them to a model that writes a batch of posts, replies, reposts, likes and follows in one go. You can post by hand too, and like or reply to anything.
 
@@ -14,16 +14,16 @@ The bit that makes it more than a toy is **carryover**: recent activity can be d
 2. Choose **Install extension** and paste this URL:
 
 ```
-https://github.com/platberlitz/SillyBunny-TwitterLike
+https://github.com/platberlitz/SillyBunny-Twitlike
 ```
 
-3. Open the **Character Menu** and there's a `#` button next to the Roleplay/Conversation picker. It's also in the wand menu if you prefer.
+3. Open the **Character Menu** and choose **Twitlike** next to Roleplay and Conversation. It's also in the wand menu if you prefer.
 
 No server plugin, no build step, no dependencies.
 
 ## Using it
 
-Open it from the `#` button in the Character Menu, beside the Roleplay/Conversation picker, and you get a full-screen timeline under the top bar. **Main** is everything, **Following** is only the accounts your persona follows.
+Open it from **Twitlike** in the Character Menu, beside Roleplay and Conversation. It replaces the chat workspace while it is open, so the top bar stays usable and **Home** returns to the landing page. **Main** is everything, **Following** is only the accounts your persona follows.
 
 Write a post in the box at the top. You can attach one picture from your computer and add a poll of two to four options. Posting by hand doesn't need an AI connection at all.
 
@@ -52,7 +52,7 @@ If images are on, each generated image prompt goes through your existing image s
 
 ## Settings
 
-All of them live inside the feed window, under **Settings** in the left nav. There's a drawer in the Extensions panel too, but it only has a button to open the feed - a timeline doesn't belong in a half-width settings column.
+All of them live inside the Twitlike workspace, under **Settings** in the left nav. There's a drawer in the Extensions panel too, but it only has a button to open Twitlike - a timeline doesn't belong in a half-width settings column.
 
 - **Who posts** - which characters take part, whether the ambient strangers join in, and how many accounts are active per refresh.
 - **Connection** - which connection profile writes the posts. A cheap model is genuinely fine here, and I'd recommend picking a separate one rather than burning your roleplay connection on shitposts. If you leave it unset it uses whatever you're currently connected to.

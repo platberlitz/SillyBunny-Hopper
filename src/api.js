@@ -328,7 +328,7 @@ function enqueueSave() {
     }
     const attempt = saveChain.then(() => writeFeed(snapshot));
     saveChain = attempt.then(() => {}, error => {
-        console.error('[TwitterLike] feed save failed', error);
+        console.error('[Twitlike] feed save failed', error);
         if (!pendingFeed) {
             pendingFeed = snapshot;
         }
@@ -405,7 +405,7 @@ async function generateProfilesFor(accounts, allAccounts, signal) {
     try {
         return parseProfileResponse(raw, accounts, others);
     } catch (error) {
-        console.warn('[TwitterLike] profile generation returned unusable JSON', error);
+        console.warn('[Twitlike] profile generation returned unusable JSON', error);
         return {};
     }
 }
@@ -426,7 +426,7 @@ export async function generatePostImage(prompt, signal) {
         );
         return typeof result?.pipe === 'string' ? result.pipe : '';
     } catch (error) {
-        console.warn('[TwitterLike] image generation failed, publishing text only', error);
+        console.warn('[Twitlike] image generation failed, publishing text only', error);
         return '';
     }
 }

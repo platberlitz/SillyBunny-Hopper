@@ -17,11 +17,10 @@ import * as api from './api.js';
 const LAUNCH_ID = 'sbtw-launch-button';
 const WAND_ID = 'sbtw-wand-button';
 const DRAWER_ID = 'sbtw-drawer';
-const EXTENSION_NAME = 'SillyBunny-TwitterLike';
+const EXTENSION_NAME = 'SillyBunny-Twitlike';
 const FEED_LIMIT = 160;
 
 const state = {
-    popup: null,
     body: null,
     feed: null,
     accounts: [],
@@ -34,15 +33,16 @@ const state = {
     draft: { text: '', image: '', poll: null },
     // Persona the current draft belongs to; a draft left by another persona is discarded.
     draftOwner: null,
+    characterSearch: '',
 };
 
 const owned = new Set();
-let toggleObserver = null;
 
-// One popup at a time; async work belongs to a session and dies with it.
+// One workspace at a time; async work belongs to a session and dies with it.
 let openTask = null;
 let sessionEpoch = 0;
 let workController = null;
+const scrollPositions = new Map();
 
 function freshSignal() {
     // Aborting also invalidates every run holding the previous signal.
@@ -108,7 +108,7 @@ function button(label, className, onClick, { iconName = '', title = '', pressed 
 }
 
 function toast(message, type = 'info') {
-    globalThis.toastr?.[type]?.(message, 'TwitterLike');
+    globalThis.toastr?.[type]?.(message, 'Twitlike');
 }
 
 // Bumped on every image pick; a finished upload with a stale token is discarded.
@@ -204,19 +204,12 @@ function avatarNode(account, size = 'md') {
     if (url) {
         return el('img', {
             className: `sbtw-avatar sbtw-avatar-${size}`,
-            attrs: { src: url, alt: '', loading: 'lazy' },
+            attrs: { src: url, alt: '', loading: 'lazy', decoding: 'async' },
         });
     }
     const name = account?.name ?? '?';
     const initials = name.split(/\s+/).slice(0, 2).map(part => part[0] ?? '').join('').toUpperCase() || '?';
-    // Ambient accounts have no card, so they get a colour derived from their own handle.
-    let hash = 0;
-    for (const character of account?.handle ?? name) {
-        hash = (hash * 31 + character.charCodeAt(0)) % 360;
-    }
-    const node = el('span', { className: `sbtw-avatar sbtw-avatar-${size} sbtw-avatar-initials`, text: initials });
-    node.style.setProperty('--sbtw-avatar-hue', String(hash));
-    return node;
+    return el('span', { className: `sbtw-avatar sbtw-avatar-${size} sbtw-avatar-initials`, text: initials });
 }
 
 /** Renders body text as text nodes, turning @handles that match a real account into links. */
@@ -472,7 +465,7 @@ function composer() {
             targetDraft.image = url;
             render();
         } catch (error) {
-            console.error('[TwitterLike] image upload failed', error);
+            console.error('[Twitlike] image upload failed', error);
             toast(error.message, 'error');
         }
     });
@@ -660,11 +653,11 @@ function numberInput(value, min, max, onChange) {
     });
 }
 
-function checkbox(label, checked, onChange) {
+function checkbox(label, checked, onChange, visual = null) {
     const box = el('input', { attrs: { type: 'checkbox', checked: checked ? 'checked' : null } });
     box.checked = checked;
     box.addEventListener('change', () => onChange(box.checked));
-    return el('label', { className: 'sbtw-check' }, [box, el('span', { text: label })]);
+    return el('label', { className: 'sbtw-check' }, [box, visual, el('span', { text: label })]);
 }
 
 function settingsView() {
@@ -685,16 +678,51 @@ function settingsView() {
         })),
     ]);
 
-    const invites = el('div', { className: 'sbtw-invites' }, characters.map(character => checkbox(
-        character.name || character.avatar,
-        settings.invited.includes(character.avatar),
-        (checked) => {
-            const next = checked
-                ? [...settings.invited, character.avatar]
-                : settings.invited.filter(item => item !== character.avatar);
-            save({ invited: next });
+    const inviteRows = characters.filter(character => character?.avatar).map((character) => {
+        const name = character.name || character.data?.name || character.avatar;
+        const row = checkbox(
+            name,
+            settings.invited.includes(character.avatar),
+            (checked) => {
+                const invited = api.getSettings().invited;
+                const next = checked
+                    ? [...new Set([...invited, character.avatar])]
+                    : invited.filter(item => item !== character.avatar);
+                save({ invited: next });
+            },
+            avatarNode({ kind: KIND_CHARACTER, entityId: character.avatar, name }, 'sm'),
+        );
+        row.classList.add('sbtw-invite');
+        row.dataset.search = [name, character.avatar].join(' ').toLocaleLowerCase();
+        return row;
+    });
+    const inviteCount = el('span', { className: 'sbtw-invite-count' });
+    const inviteEmpty = el('p', { className: 'sbtw-invite-empty' });
+    const invites = el('div', { className: 'sbtw-invites' }, [...inviteRows, inviteEmpty]);
+    const inviteSearch = el('input', {
+        className: 'sbtw-input sbtw-character-search',
+        attrs: {
+            type: 'search',
+            value: state.characterSearch,
+            placeholder: 'Search characters',
+            autocomplete: 'off',
+            'aria-label': 'Search characters',
         },
-    )));
+    });
+    const filterInvites = () => {
+        const query = inviteSearch.value.trim().toLocaleLowerCase();
+        state.characterSearch = inviteSearch.value;
+        let visible = 0;
+        for (const row of inviteRows) {
+            row.hidden = Boolean(query) && !row.dataset.search.includes(query);
+            visible += row.hidden ? 0 : 1;
+        }
+        inviteEmpty.hidden = visible > 0;
+        inviteEmpty.textContent = query ? 'No characters match this search.' : 'No characters are available.';
+        inviteCount.textContent = query ? `${visible} of ${inviteRows.length}` : `${settings.invited.length} invited`;
+    };
+    inviteSearch.addEventListener('input', filterInvites);
+    filterInvites();
 
     const activeMode = el('select', {
         className: 'sbtw-input',
@@ -708,7 +736,11 @@ function settingsView() {
         el('h3', { text: 'Who posts' }),
         // A group of checkboxes cannot live inside a single <label>; each has its own.
         el('div', { className: 'sbtw-field' }, [
-            el('span', { className: 'sbtw-field-label', text: 'Characters' }),
+            el('div', { className: 'sbtw-field-heading' }, [
+                el('span', { className: 'sbtw-field-label', text: 'Characters' }),
+                inviteCount,
+            ]),
+            inviteSearch,
             invites,
             el('span', { className: 'sbtw-hint', text: 'Only invited characters take part in a refresh.' }),
         ]),
@@ -819,6 +851,10 @@ function render() {
     if (!state.body) {
         return;
     }
+    const oldMain = state.body.querySelector('.sbtw-main');
+    if (oldMain?.dataset.scrollKey) {
+        scrollPositions.set(oldMain.dataset.scrollKey, oldMain.scrollTop);
+    }
     byPost = buildInteractionMap();
     const views = {
         timeline: timelineView,
@@ -826,7 +862,13 @@ function render() {
         notifications: notificationsView,
         settings: settingsView,
     };
-    const main = el('main', { className: 'sbtw-main' }, [(views[state.view] ?? timelineView)()]);
+    const scrollKey = state.view === 'timeline'
+        ? `timeline:${state.tab}`
+        : state.view === 'profile' ? `profile:${state.profileKey ?? ''}` : state.view;
+    const main = el('main', {
+        className: 'sbtw-main',
+        attrs: { 'data-scroll-key': scrollKey },
+    }, [(views[state.view] ?? timelineView)()]);
     const me = personaAccount();
     const nav = el('nav', { className: 'sbtw-nav', attrs: { 'aria-label': 'Timeline sections' } }, [
         navButton('Home', 'fa-house', 'timeline'),
@@ -847,6 +889,7 @@ function render() {
     // A rail that does not exist must not be appended - DOM APIs would stringify the null.
     const rail = state.view === 'timeline' ? whoToFollow() : null;
     state.body.replaceChildren(...(rail ? [nav, main, rail] : [nav, main]));
+    main.scrollTop = scrollPositions.get(scrollKey) ?? 0;
 }
 
 function scrollToPost(postId) {
@@ -1018,7 +1061,7 @@ async function openImage(url) {
 }
 
 /**
- * A refresh belongs to its session: closing the popup, resetting the timeline or a newer
+ * A refresh belongs to its session: closing the workspace, resetting the timeline or a newer
  * run aborts it through its signal, and every await is followed by a staleness check so
  * stale work can never render, toast, or clear a live run's state.
  */
@@ -1057,7 +1100,7 @@ async function refresh() {
         }
         state.status = '';
         if (result.warnings.length) {
-            console.warn('[TwitterLike] refresh warnings', result.warnings);
+            console.warn('[Twitlike] refresh warnings', result.warnings);
             toast(`Kept what made sense. ${result.warnings.length} item(s) were dropped - see the console.`, 'info');
         }
         if (!result.posts.length && !result.interactions.length) {
@@ -1065,12 +1108,12 @@ async function refresh() {
         }
     } catch (error) {
         if (!isLive(epoch)) {
-            console.warn('[TwitterLike] refresh cancelled', error);
+            console.warn('[Twitlike] refresh cancelled', error);
             return;
         }
         state.status = '';
         // Provider errors are remote text; show a fixed message and keep the raw one local.
-        console.error('[TwitterLike] refresh failed', error);
+        console.error('[Twitlike] refresh failed', error);
         toast('The refresh failed - check your connection settings, then try again.', 'error');
     } finally {
         if (runs === refreshRuns) {
@@ -1097,7 +1140,7 @@ async function resetTimeline() {
     try {
         await api.writeFeed(state.feed);
     } catch (error) {
-        console.error('[TwitterLike] resetting the saved feed failed', error);
+        console.error('[Twitlike] resetting the saved feed failed', error);
         toast('The timeline is cleared here, but the saved file could not be rewritten.', 'warning');
     }
     state.view = 'timeline';
@@ -1106,135 +1149,134 @@ async function resetTimeline() {
 
 // --- opening --------------------------------------------------------------
 
-/**
- * How far down the screen the feed has to start. --topBarBlockSize is the host's own
- * variable, but a theme can restyle the bar without updating it - Moonlit reports 34px for
- * a bar that actually ends at 40 - so measure the thing itself and keep the variable as a
- * fallback for when none of the containers are on the page.
- */
-function topbarOffset() {
-    let bottom = 0;
-    for (const id of ['sb-topbar-stack', 'top-bar', 'top-settings-holder']) {
-        const node = document.getElementById(id);
-        if (!node) {
-            continue;
-        }
-        const rect = node.getBoundingClientRect();
-        if (rect.height > 0 && rect.bottom > bottom) {
-            bottom = rect.bottom;
-        }
-    }
-    return Math.round(bottom);
+function syncLaunchState(open) {
+    const launch = document.getElementById(LAUNCH_ID);
+    launch?.classList.toggle('is-active', open);
+    launch?.setAttribute('aria-pressed', String(open));
 }
 
-function applyTopbarOffset() {
-    const dialog = state.popup?.dlg;
-    if (!dialog) {
+function closeFeed() {
+    const host = document.getElementById('sheld');
+    if (!state.body && !openTask && !host?.hasAttribute('data-sbtw-mode')) {
         return;
     }
-    const offset = topbarOffset();
-    if (offset > 0) {
-        dialog.style.setProperty('--sbtw-topbar', `${offset}px`);
-    } else {
-        dialog.style.removeProperty('--sbtw-topbar');
+    invalidateWork();
+    openTask = null;
+    refreshRuns += 1;
+    uploadToken += 1;
+    state.body?.remove();
+    state.body = null;
+    state.feed = null;
+    state.accounts = [];
+    state.replyingTo = null;
+    state.status = '';
+    state.busy = false;
+    state.draft = { text: '', image: '', poll: null };
+    state.draftOwner = null;
+    replyDrafts.clear();
+    pendingReplyFocus = null;
+    byPost = new Map();
+    scrollPositions.clear();
+    host?.removeAttribute('data-sbtw-mode');
+    syncLaunchState(false);
+    void api.flushFeed().catch(error => console.error('[Twitlike] final save failed', error));
+}
+
+function handleHostNavigation(event) {
+    if (event.target instanceof Element
+        && event.target.closest('#sb-home-toggle, #sb_character_mode_toggle [data-sb-character-mode]')) {
+        // Restore the host workspace before its own click handler decides what Home means.
+        closeFeed();
     }
 }
 
-function closePopup(popup) {
-    if (typeof popup.completeCancelled === 'function') {
-        popup.completeCancelled();
-    } else {
-        popup.hide?.();
-    }
+function reopenFeed() {
+    closeFeed();
+    return openFeed();
 }
 
-/** Waits out the closing session so a retry starts against clean state. */
-async function reopenFeed() {
-    while (openTask) {
-        try {
-            await openTask;
-        } catch {
-            // The failed attempt already reported itself.
-        }
-    }
-    openFeed();
-}
-
-/**
- * One feed at a time: rapid double-clicks share the same promise instead of building two
- * popups over one set of globals.
- */
+/** Rapid double-clicks share one load instead of building two workspaces over one state. */
 export function openFeed() {
+    if (state.body?.isConnected) {
+        document.getElementById('sb_character_shell_close')?.click();
+        return Promise.resolve();
+    }
     if (openTask) {
         return openTask;
     }
-    openTask = startFeed().finally(() => { openTask = null; });
-    return openTask;
+    const task = startFeed();
+    openTask = task;
+    return task.finally(() => {
+        if (openTask === task) {
+            openTask = null;
+        }
+    });
 }
 
 async function startFeed() {
-    const context = globalThis.SillyTavern.getContext();
+    const host = document.getElementById('sheld');
+    if (!host) {
+        toast('The chat workspace is not available yet.', 'warning');
+        return;
+    }
     invalidateWork();
+    const openingEpoch = sessionEpoch;
+    let feed = null;
+    let accounts = [];
     let failure = null;
     try {
-        state.feed = await api.loadFeed();
-        await refreshAccounts();
+        feed = await api.loadFeed();
+        accounts = await api.currentAccounts();
     } catch (error) {
-        state.feed = null;
         failure = error;
     }
+    if (openingEpoch !== sessionEpoch) {
+        return;
+    }
+    state.feed = feed;
+    state.accounts = accounts;
     state.view = 'timeline';
+    state.tab = 'main';
+    state.profileKey = null;
     state.replyingTo = null;
     state.draft = { text: '', image: '', poll: null };
     state.draftOwner = null;
     replyDrafts.clear();
     pendingReplyFocus = null;
+    scrollPositions.clear();
 
-    const body = el('div', { className: 'sbtw-shell', attrs: { role: 'region', 'aria-label': 'TwitterLike' } });
+    const body = el('div', {
+        className: `sbtw-shell${failure ? ' sbtw-shell-error' : ''}`,
+        attrs: { role: 'region', 'aria-label': 'Twitlike' },
+    });
+    state.body = body;
+    window.dispatchEvent(new CustomEvent('sb:close-conversation-workspace'));
+    host.dataset.sbtwMode = 'on';
+    host.append(body);
+    syncLaunchState(true);
+    document.getElementById('sb_character_shell_close')?.click();
+
     if (failure) {
         // Fail closed with a way out - never an editable-looking empty timeline.
-        console.error('[TwitterLike] the saved timeline could not be opened', failure);
+        console.error('[Twitlike] the saved timeline could not be opened', failure);
         body.append(
             el('h3', { text: 'The saved timeline could not be read' }),
             el('p', { className: 'sbtw-hint', text: String(failure?.message ?? failure) }),
             el('div', { className: 'sbtw-composer-bar' }, [
-                button('Try again', 'sbtw-btn sbtw-btn-primary', () => { closePopup(popup); reopenFeed(); }),
-                button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetFailedTimeline(popup)),
+                button('Try again', 'sbtw-btn sbtw-btn-primary', () => reopenFeed()),
+                button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetFailedTimeline()),
             ]),
         );
     } else {
-        state.body = body;
         render();
         if (needsCatchUp(api.getSettings())) {
-            refresh();
+            void refresh();
         }
-    }
-
-    // Full screen below the top bar. The host has no fullscreen popup option, so the size
-    // comes from our own class on the dialog rather than from wide/large.
-    const popup = new context.Popup(body, context.POPUP_TYPE.DISPLAY, '', {
-        animation: 'fast',
-    });
-    popup.dlg?.classList.add('sbtw-popup');
-    state.popup = popup;
-    applyTopbarOffset();
-    window.addEventListener('resize', applyTopbarOffset);
-
-    try {
-        await popup.show();
-    } finally {
-        window.removeEventListener('resize', applyTopbarOffset);
-        invalidateWork();
-        if (state.popup === popup) {
-            state.popup = null;
-            state.body = null;
-            byPost = new Map();
-        }
-        await api.flushFeed().catch(error => console.error('[TwitterLike] final save failed', error));
     }
 }
 
-async function resetFailedTimeline(popup) {
+async function resetFailedTimeline() {
+    const body = state.body;
     const context = globalThis.SillyTavern.getContext();
     const confirmed = await context.Popup.show.confirm(
         'Start a new timeline?',
@@ -1246,91 +1288,40 @@ async function resetFailedTimeline(popup) {
     try {
         await api.writeFeed({ version: 1, posts: [], interactions: [] });
     } catch (error) {
-        console.error('[TwitterLike] resetting the saved feed failed', error);
+        console.error('[Twitlike] resetting the saved feed failed', error);
         toast('The saved file could not be cleared - try again.', 'error');
         return;
     }
-    closePopup(popup);
-    reopenFeed();
+    if (state.body === body) {
+        reopenFeed();
+    }
 }
 
 // --- mounting -------------------------------------------------------------
 
-/**
- * The launch button sits in the Character Menu header, beside the Roleplay/Conversation
- * picker. That picker is a `role="radiogroup"`, so the button goes next to it as a sibling
- * and never inside it - a non-radio child would break the group's semantics.
- *
- * Both the picker and the close button are absolutely positioned against the header, so
- * ours is too. Its `right` has to clear the picker, whose width changes when its labels
- * are hidden below 900px, hence the observer rather than a fixed offset.
- */
-const LAUNCH_GAP = 8;
-
-function positionLaunchButton() {
-    const toggle = document.getElementById('sb_character_mode_toggle');
-    const node = document.getElementById(LAUNCH_ID);
-    const header = toggle?.parentElement;
-    if (!toggle || !node || !header) {
-        return;
-    }
-    const box = toggle.getBoundingClientRect();
-    if (box.width <= 0) {
-        // Panel is closed or mid-open; the numbers would be meaningless.
-        return;
-    }
-    const frame = header.getBoundingClientRect();
-    // Derive everything from the picker itself. Its top, right offset and height all change
-    // across breakpoints, so hardcoding any of them just moves the bug to another width.
-    node.style.setProperty('--sbtw-launch-top', `${Math.round(box.top - frame.top)}px`);
-    node.style.setProperty('--sbtw-launch-right', `${Math.round(frame.right - box.left + LAUNCH_GAP)}px`);
-    node.style.setProperty('--sbtw-launch-size', `${Math.round(box.height)}px`);
-}
-
 function mountCharacterButton() {
     if (document.getElementById(LAUNCH_ID)) {
-        positionLaunchButton();
         return;
     }
     const toggle = document.getElementById('sb_character_mode_toggle');
-    const header = toggle?.parentElement;
-    if (!header) {
+    if (!toggle?.parentElement) {
         return;
     }
     const node = el('button', {
-        className: 'sbtw-launch',
+        className: 'sb-character-shell-mode-button sbtw-launch',
         attrs: {
             id: LAUNCH_ID,
             type: 'button',
-            title: 'TwitterLike',
-            'aria-label': 'Open TwitterLike',
+            title: 'Open Twitlike',
+            'aria-label': 'Open Twitlike',
+            'aria-pressed': 'false',
         },
         on: { click: () => openFeed() },
-    }, [icon('fa-hashtag')]);
+    }, [icon('fa-hashtag'), el('span', { text: 'Twitlike' })]);
 
-    toggle.insertAdjacentElement('beforebegin', node);
+    // Keep this outside the radiogroup, then visually place it in the pill with CSS.
+    toggle.insertAdjacentElement('afterend', node);
     owned.add(node);
-    positionLaunchButton();
-
-    /*
-     * Measuring once is not enough. The panel animates open, and observing only the picker
-     * catches a mid-animation width (238px for a picker that settles at 248) with no
-     * further callback. So watch the panel as well, and re-measure when its open/close
-     * transition ends - between them the button is never left at a stale offset.
-     */
-    const panel = node.closest('#right-nav-panel') ?? node.closest('.drawer-content');
-    if (typeof ResizeObserver === 'function') {
-        toggleObserver?.disconnect();
-        toggleObserver = new ResizeObserver(() => positionLaunchButton());
-        toggleObserver.observe(toggle);
-        if (panel) {
-            toggleObserver.observe(panel);
-        }
-    }
-    if (panel && !panel.dataset.sbtwPositionBound) {
-        panel.dataset.sbtwPositionBound = 'true';
-        panel.addEventListener('transitionend', positionLaunchButton);
-    }
 }
 
 function mountWandItem() {
@@ -1344,7 +1335,7 @@ function mountWandItem() {
     // Wand entries must be divs: the host styles #extensionsMenu > div.
     const node = el('div', {
         className: 'list-group-item flex-container flexGap5 interactable',
-        attrs: { id: WAND_ID, tabindex: '0', role: 'button', 'aria-label': 'Open TwitterLike' },
+        attrs: { id: WAND_ID, tabindex: '0', role: 'button', 'aria-label': 'Open Twitlike' },
         on: {
             click: () => openFeed(),
             keydown: (event) => {
@@ -1356,7 +1347,7 @@ function mountWandItem() {
         },
     }, [
         el('div', { className: 'fa-solid fa-hashtag extensionsMenuExtensionButton' }),
-        el('span', { text: 'TwitterLike' }),
+        el('span', { text: 'Twitlike' }),
     ]);
     menu.append(node);
     owned.add(node);
@@ -1370,14 +1361,14 @@ function mountDrawer() {
     let drawer = document.getElementById(DRAWER_ID);
     if (!drawer) {
         const content = el('div', { className: 'inline-drawer-content', attrs: { id: `${DRAWER_ID}-content` } }, [
-            el('p', { className: 'sbtw-hint', text: 'A pretend social timeline for your own cast. Everything lives in the feed window - open it and use Settings there.' }),
-            button('Open TwitterLike', 'sbtw-btn sbtw-btn-primary', () => openFeed(), { iconName: 'fa-hashtag' }),
+            el('p', { className: 'sbtw-hint', text: 'A pretend social timeline for your own cast. Everything lives in the Twitlike workspace - open it and use Settings there.' }),
+            button('Open Twitlike', 'sbtw-btn sbtw-btn-primary', () => openFeed(), { iconName: 'fa-hashtag' }),
         ]);
         const toggle = el('div', {
             className: 'inline-drawer-toggle inline-drawer-header',
             attrs: { tabindex: '0', role: 'button', 'aria-expanded': 'false', 'aria-controls': `${DRAWER_ID}-content` },
         }, [
-            el('b', { text: 'TwitterLike' }),
+            el('b', { text: 'Twitlike' }),
             el('div', { className: 'inline-drawer-icon fa-solid fa-circle-chevron-down down' }),
         ]);
         const onToggle = () => {
@@ -1404,24 +1395,18 @@ function mountDrawer() {
 
 export function mountAll() {
     document.body.classList.add(BODY_CLASS);
+    document.addEventListener('click', handleHostNavigation, true);
     mountCharacterButton();
     mountWandItem();
     mountDrawer();
 }
 
 export function unmountAll() {
+    document.removeEventListener('click', handleHostNavigation, true);
+    closeFeed();
     document.body.classList.remove(BODY_CLASS);
-    toggleObserver?.disconnect();
-    toggleObserver = null;
     for (const node of owned) {
         node.remove();
     }
     owned.clear();
-    invalidateWork();
-    state.popup?.completeCancelled?.();
-    state.popup = null;
-    state.body = null;
-    state.feed = null;
-    state.accounts = [];
-    byPost = new Map();
 }

@@ -1,5 +1,5 @@
 {
-    "display_name": "TwitterLike",
+    "display_name": "Twitlike",
     "author": "platberlitz",
     "version": "0.1.0",
     "description": "A pretend social timeline for your own cast. Your persona and the characters you invite get profiles and post at each other; one refresh writes a batch of posts, replies, reposts and likes. Optionally feeds recent activity back into your chats.",
@@ -10,7 +10,7 @@
     "js": "index.js",
     "css": "style.css",
     "license": "AGPL-3.0",
-    "homePage": "https://github.com/platberlitz/SillyBunny-TwitterLike",
+    "homePage": "https://github.com/platberlitz/SillyBunny-Twitlike",
     "loading_order": 150,
     "auto_update": false,
     "hooks": {

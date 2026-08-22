@@ -33,7 +33,7 @@ async function syncCarryover() {
     try {
         await applyCarryover(await loadFeed());
     } catch (error) {
-        console.error('[TwitterLike] could not build the carryover block', error);
+        console.error('[Twitlike] could not build the carryover block', error);
     }
 }
 
@@ -72,9 +72,9 @@ function stop() {
         unsubscribeAll();
         ctx().setExtensionPrompt('SillyBunny-TwitterLike', '', 1, 1, false, 0);
     } catch (error) {
-        console.error('[TwitterLike] teardown had a problem', error);
+        console.error('[Twitlike] teardown had a problem', error);
     }
-    const finalSave = flushFeed().catch(error => console.error('[TwitterLike] final save failed', error));
+    const finalSave = flushFeed().catch(error => console.error('[Twitlike] final save failed', error));
     unmountAll();
     // The host may or may not await disable(), but nothing is left dangling either way.
     return finalSave;
