@@ -21,7 +21,7 @@ import * as api from './api.js';
 const LAUNCH_ID = 'sbtw-launch-button';
 const WAND_ID = 'sbtw-wand-button';
 const DRAWER_ID = 'sbtw-drawer';
-const EXTENSION_NAME = 'SillyBunny-Twitlike';
+const EXTENSION_NAME = 'SillyBunny-Hopper';
 const FEED_LIMIT = 160;
 const SEARCH_DEBOUNCE_MS = 150;
 

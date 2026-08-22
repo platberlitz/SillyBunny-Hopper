@@ -79,7 +79,7 @@ All of them live inside the Twitlike workspace under **Settings**. The drawer in
 
 ## Install
 
-Use SillyBunny's extension installer with `https://github.com/platberlitz/SillyBunny-Twitlike`, or clone it into `data/<user>/extensions/`. No server plugin, no build step, no dependencies.
+Use SillyBunny's extension installer with `https://github.com/platberlitz/SillyBunny-Hopper`, or clone it into `data/<user>/extensions/`. No server plugin, no build step, no dependencies.
 
 ## Development
 
