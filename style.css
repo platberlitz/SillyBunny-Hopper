@@ -23,6 +23,9 @@
     padding: 8px 11px;
     justify-content: center;
     opacity: 0.78;
+    /* The host only rings buttons inside the radiogroup; repeat its resting
+     * bubble so the third control reads as encased like Roleplay/Conversation. */
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sb-shell-border) 62%, transparent);
     z-index: 2;
 }
 
