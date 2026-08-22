@@ -212,6 +212,16 @@ test('a corrupt feed file fails closed instead of becoming a writable empty feed
     assert.equal(fetchCalls.filter(([url]) => url === '/api/files/upload').length, 0);
 });
 
+test('a feed file left base64 encoded by the host is still read back', async () => {
+    updateSettings({ shards: ['/user/files/twitterlike-feed.json'] });
+    // Some hosts write the upload payload verbatim instead of decoding it.
+    const stored = { posts: [{ id: 'p1', authorKey: 'a', body: 'héllo ✨', createdAt: 1 }], interactions: [] };
+    const encoded = Buffer.from(JSON.stringify(stored), 'utf8').toString('base64');
+    fakeFetch(() => ({ ok: true, status: 200, text: async () => `${encoded}\n` }));
+    const feed = await loadFeed();
+    assert.equal(feed.posts[0].body, 'héllo ✨');
+});
+
 test('an empty feed file starts over instead of locking the timeline shut', async () => {
     updateSettings({ shards: ['/user/files/twitterlike-feed.json'] });
     fakeFetch(() => ({ ok: true, status: 200, text: async () => '  \n' }));

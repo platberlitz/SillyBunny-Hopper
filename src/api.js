@@ -250,11 +250,11 @@ export async function loadFeed() {
     if (!text.trim()) {
         return { ...EMPTY_FEED };
     }
-    let raw = null;
-    try {
-        raw = JSON.parse(text.replace(/^\uFEFF/, ''));
-    } catch {
-        raw = null;
+    let raw = parseJson(text);
+    if (raw === null && /^[A-Za-z0-9+/\s=]+$/.test(text)) {
+        // Some hosts store the upload payload verbatim instead of decoding it, leaving the
+        // feed on disk as base64. Read it back rather than calling the timeline unreadable.
+        raw = parseJson(fromBase64(text));
     }
     if (!isObj(raw) || !Array.isArray(raw.posts) || !Array.isArray(raw.interactions)) {
         console.error('[Twitlike] the saved timeline is not a timeline file', url, text.slice(0, 300));
@@ -263,15 +263,32 @@ export async function loadFeed() {
     return normalizeFeed(raw);
 }
 
-/** Reads a JSON response, and says what actually arrived when the body is not JSON. */
-async function readJson(response, what) {
-    const text = await response.text();
+function parseJson(text) {
     try {
         return JSON.parse(text.replace(/^\uFEFF/, ''));
     } catch {
+        return null;
+    }
+}
+
+function fromBase64(text) {
+    try {
+        const binary = atob(text.replace(/\s/g, ''));
+        return new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0)));
+    } catch {
+        return '';
+    }
+}
+
+/** Reads a JSON response, and says what actually arrived when the body is not JSON. */
+async function readJson(response, what) {
+    const text = await response.text();
+    const parsed = parseJson(text);
+    if (parsed === null) {
         console.error(`[Twitlike] ${what} did not answer with JSON`, response.url, text.slice(0, 300));
         throw new Error(`${what} answered with "${text.trim().slice(0, 40)}" instead of data. Is this SillyBunny tab still signed in?`);
     }
+    return parsed;
 }
 
 function toBase64(text) {
