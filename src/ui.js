@@ -9,6 +9,7 @@ import {
     POST_MAX_CHARS,
     REPLY_MAX_CHARS,
     handleIndex,
+    matchesTimelineQuery,
     needsCatchUp,
     snapshotOf,
 } from './core.js';
@@ -36,6 +37,7 @@ const state = {
     // Persona the current draft belongs to; a draft left by another persona is discarded.
     draftOwner: null,
     characterSearch: '',
+    timelineSearch: '',
 };
 
 const owned = new Set();
@@ -105,10 +107,15 @@ function icon(name) {
     return el('i', { className: `fa-solid ${name}`, attrs: { 'aria-hidden': 'true' } });
 }
 
-function button(label, className, onClick, { iconName = '', title = '', pressed = null } = {}) {
+function button(label, className, onClick, { iconName = '', title = '', ariaLabel = '', pressed = null } = {}) {
     const node = el('button', {
         className,
-        attrs: { type: 'button', title: title || label, 'aria-pressed': pressed === null ? null : String(pressed) },
+        attrs: {
+            type: 'button',
+            title: title || label,
+            'aria-label': ariaLabel || null,
+            'aria-pressed': pressed === null ? null : String(pressed),
+        },
         on: { click: onClick },
     }, iconName ? [icon(iconName), el('span', { text: label })] : [el('span', { text: label })]);
     return node;
@@ -191,13 +198,39 @@ function followingKeys() {
     return new Set(me ? (state.session?.follows[me.key] ?? []) : []);
 }
 
-function visiblePosts() {
-    const sorted = [...state.feed.posts].sort((a, b) => activityAt(b) - activityAt(a));
-    if (state.tab === 'following') {
-        const following = followingKeys();
-        return sorted.filter(post => following.has(post.authorKey)).slice(0, FEED_LIMIT);
+function visibleTimelineEntries(query = state.timelineSearch) {
+    const me = personaAccount();
+    const following = followingKeys();
+    const relevantReposters = new Set([...following, ...(me ? [me.key] : [])]);
+    const entries = state.feed.posts.map((post) => {
+        const repost = state.tab === 'following'
+            ? interactionsFor(post.id)
+                .filter(item => item.type === 'repost' && relevantReposters.has(item.actorKey))
+                .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+            : null;
+        return {
+            post,
+            repost,
+            sortAt: Math.max(activityAt(post), repost?.createdAt ?? 0),
+        };
+    }).filter(({ post, repost }) => state.tab !== 'following'
+        || post.authorKey === me?.key
+        || following.has(post.authorKey)
+        || repost);
+
+    const matches = entries
+        .filter(({ post }) => matchesTimelineQuery(post, interactionsFor(post.id), query))
+        .sort((a, b) => b.sortAt - a.sortAt);
+    const visible = matches.slice(0, FEED_LIMIT);
+    const targetPostId = state.replyingTo?.postId;
+    if (!String(query ?? '').trim() && targetPostId && !visible.some(entry => entry.post.id === targetPostId)) {
+        const target = entries.find(entry => entry.post.id === targetPostId);
+        if (target) {
+            visible.unshift(target);
+            visible.length = Math.min(visible.length, FEED_LIMIT);
+        }
     }
-    return sorted.slice(0, FEED_LIMIT);
+    return { entries: visible, total: matches.length };
 }
 
 function persist() {
@@ -257,11 +290,12 @@ function pollNode(post) {
     const rows = post.poll.options.map((option, index) => {
         const count = votes.filter(vote => vote.pollOptionIndex === index).length;
         const share = total ? Math.round((count / total) * 100) : 0;
+        const selected = mine?.pollOptionIndex === index;
         const bar = el('span', { className: 'sbtw-poll-bar' });
         bar.style.setProperty('--sbtw-poll-share', `${share}%`);
         const row = el('button', {
-            className: `sbtw-poll-option${mine?.pollOptionIndex === index ? ' sbtw-poll-mine' : ''}`,
-            attrs: { type: 'button' },
+            className: `sbtw-poll-option${selected ? ' sbtw-poll-mine' : ''}`,
+            attrs: { type: 'button', 'aria-pressed': String(selected), disabled: personaAccount() ? null : 'disabled' },
             on: { click: () => vote(post, index) },
         }, [
             bar,
@@ -288,6 +322,32 @@ function imageNode(post) {
     }, [el('img', { attrs: { src: post.image.url, alt: post.image.prompt ?? '', loading: 'lazy' } })]);
 }
 
+const replyDrafts = new Map();
+let pendingReplyFocus = null;
+
+function replyTargetKey(target) {
+    return JSON.stringify([target.postId, target.parentInteractionId ?? null]);
+}
+
+function isReplyTarget(postId, parentInteractionId = null) {
+    return state.replyingTo?.postId === postId
+        && state.replyingTo?.parentInteractionId === parentInteractionId;
+}
+
+function setReplyTarget(postId, parentInteractionId = null, { toggle = true } = {}) {
+    const target = { postId, parentInteractionId };
+    const same = isReplyTarget(postId, parentInteractionId);
+    if (toggle && same) {
+        replyDrafts.delete(replyTargetKey(target));
+        state.replyingTo = null;
+        pendingReplyFocus = null;
+    } else {
+        state.replyingTo = target;
+        pendingReplyFocus = replyTargetKey(target);
+    }
+    render();
+}
+
 function actionsNode(post) {
     const me = personaAccount();
     const liked = Boolean(myInteraction(post.id, 'like'));
@@ -303,15 +363,7 @@ function actionsNode(post) {
     return el('div', { className: 'sbtw-actions' }, [
         action('fa-heart', countOf(post.id, 'like'), liked, () => toggle(post, 'like'), liked ? 'Unlike' : 'Like'),
         action('fa-retweet', countOf(post.id, 'repost'), reposted, () => toggle(post, 'repost'), reposted ? 'Undo repost' : 'Repost'),
-        action('fa-comment', replies, state.replyingTo === post.id, () => {
-            const opening = state.replyingTo !== post.id;
-            state.replyingTo = opening ? post.id : null;
-            pendingReplyFocus = opening ? post.id : null;
-            if (!opening) {
-                replyDrafts.delete(post.id);
-            }
-            render();
-        }, 'Reply'),
+        action('fa-comment', replies, isReplyTarget(post.id), () => setReplyTarget(post.id), 'Reply'),
     ]);
 }
 
@@ -320,6 +372,9 @@ function replyNode(reply) {
         ? state.feed.interactions.find(item => item.id === reply.parentInteractionId)
         : null;
     const account = accountFor(reply.actorKey);
+    const me = personaAccount();
+    const handle = handleFor(reply.actorKey, reply.actorSnapshot);
+    const targeted = isReplyTarget(reply.postId, reply.id);
     return el('div', { className: 'sbtw-reply', attrs: { 'data-kind': reply.actorSnapshot?.kind ?? '' } }, [
         avatarNode(account, 'sm'),
         el('div', { className: 'sbtw-reply-main' }, [
@@ -330,7 +385,7 @@ function replyNode(reply) {
                     attrs: { type: 'button' },
                     on: { click: () => showProfile(reply.actorKey) },
                 }),
-                el('span', { className: 'sbtw-handle', text: `@${handleFor(reply.actorKey, reply.actorSnapshot)}` }),
+                el('span', { className: 'sbtw-handle', text: `@${handle}` }),
                 el('span', { className: 'sbtw-time', text: dateFormat.format(new Date(reply.createdAt)) }),
             ]),
             parent
@@ -340,11 +395,25 @@ function replyNode(reply) {
                 })
                 : null,
             el('div', { className: 'sbtw-body' }, [bodyNode(reply.content)]),
+            el('div', { className: 'sbtw-reply-actions' }, [
+                me ? button('Reply', `sbtw-action${targeted ? ' sbtw-action-on' : ''}`,
+                    () => setReplyTarget(reply.postId, reply.id), {
+                        iconName: 'fa-comment',
+                        ariaLabel: `Reply to @${handle}`,
+                        pressed: targeted,
+                    }) : null,
+                me?.key === reply.actorKey
+                    ? button('Delete', 'sbtw-action sbtw-action-danger', () => deleteReply(reply), {
+                        iconName: 'fa-trash',
+                        ariaLabel: 'Delete your reply',
+                    })
+                    : null,
+            ]),
         ]),
     ]);
 }
 
-function postNode(post) {
+function postNode(post, repost = null) {
     const account = accountFor(post.authorKey);
     const me = personaAccount();
     const mine = me && post.authorKey === me.key;
@@ -353,6 +422,10 @@ function postNode(post) {
         .sort((a, b) => a.createdAt - b.createdAt);
 
     return el('article', { className: 'sbtw-post', attrs: { 'data-post-id': post.id } }, [
+        repost ? el('div', { className: 'sbtw-repost-context' }, [
+            icon('fa-retweet'),
+            el('span', { text: `${nameFor(repost.actorKey, repost.actorSnapshot)} reposted` }),
+        ]) : null,
         el('div', { className: 'sbtw-post-row' }, [
             avatarNode(account, 'md'),
             el('div', { className: 'sbtw-post-main' }, [
@@ -377,31 +450,36 @@ function postNode(post) {
                 pollNode(post),
                 imageNode(post),
                 actionsNode(post),
-                state.replyingTo === post.id ? replyComposer(post) : null,
+                state.replyingTo?.postId === post.id ? replyComposer(post) : null,
                 replies.length ? el('div', { className: 'sbtw-replies' }, replies.map(replyNode)) : null,
             ]),
         ]),
     ]);
 }
 
-const replyDrafts = new Map();
-let pendingReplyFocus = null;
-
 function replyComposer(post) {
     const me = personaAccount();
+    const target = state.replyingTo ?? { postId: post.id, parentInteractionId: null };
+    const parent = target.parentInteractionId
+        ? interactionsFor(post.id).find(item => item.type === 'reply' && item.id === target.parentInteractionId)
+        : null;
+    const key = replyTargetKey(target);
+    const parentHandle = parent ? handleFor(parent.actorKey, parent.actorSnapshot) : '';
     const field = el('textarea', {
         className: 'sbtw-input',
         attrs: {
             rows: '2',
             maxlength: String(REPLY_MAX_CHARS),
-            placeholder: `Reply as ${me?.name ?? 'you'}...`,
-            'aria-label': `Reply as ${me?.name ?? 'you'}`,
+            placeholder: parentHandle ? `Reply to @${parentHandle}...` : `Reply as ${me?.name ?? 'you'}...`,
+            'aria-label': parentHandle
+                ? `Reply to @${parentHandle} as ${me?.name ?? 'you'}`
+                : `Reply as ${me?.name ?? 'you'}`,
         },
     });
     // The draft survives re-renders; focus is only claimed when the composer opens.
-    field.value = replyDrafts.get(post.id) ?? '';
-    field.addEventListener('input', () => { replyDrafts.set(post.id, field.value); });
-    if (pendingReplyFocus === post.id) {
+    field.value = replyDrafts.get(key) ?? '';
+    field.addEventListener('input', () => { replyDrafts.set(key, field.value); });
+    if (pendingReplyFocus === key) {
         pendingReplyFocus = null;
         queueMicrotask(() => field.focus());
     }
@@ -410,15 +488,69 @@ function replyComposer(post) {
         if (!text) {
             return;
         }
-        addReply(post, text);
+        addReply(post, text, target.parentInteractionId);
     });
-    return el('div', { className: 'sbtw-reply-composer' }, [field, el('div', { className: 'sbtw-composer-bar' }, [send])]);
+    return el('div', { className: 'sbtw-reply-composer' }, [
+        parent ? el('div', { className: 'sbtw-replying', text: `Replying to @${parentHandle}` }) : null,
+        field,
+        el('div', { className: 'sbtw-composer-bar' }, [send]),
+    ]);
+}
+
+/** One action bar for both composer states, so Refresh works even without a persona. */
+function composerBar(canPost, postField = null) {
+    const picker = el('input', { attrs: { type: 'file', accept: 'image/*', hidden: 'hidden' } });
+    picker.addEventListener('change', async () => {
+        const file = picker.files?.[0];
+        picker.value = ''; // cleared immediately so the same file can be picked again
+        if (!file) {
+            return;
+        }
+        // Late uploads must not attach to a newer pick or to a post published since.
+        const mine = ++uploadToken;
+        const targetDraft = state.draft;
+        try {
+            const url = await api.uploadImage(file);
+            if (mine !== uploadToken || state.draft !== targetDraft) {
+                return;
+            }
+            targetDraft.image = url;
+            render();
+        } catch (error) {
+            console.error('[Twitlike] image upload failed', error);
+            toast(error.message, 'error');
+        }
+    });
+
+    return el('div', { className: 'sbtw-composer-bar' }, [
+        picker,
+        canPost ? button('Image', 'sbtw-btn sbtw-btn-quiet', () => picker.click(), { iconName: 'fa-image' }) : null,
+        canPost && api.getSettings().polls && !state.draft.poll
+            ? button('Poll', 'sbtw-btn sbtw-btn-quiet', () => { state.draft.poll = ['', '']; render(); }, { iconName: 'fa-square-poll-vertical' })
+            : null,
+        el('button', {
+            className: 'sbtw-btn sbtw-btn-primary',
+            attrs: { type: 'button', disabled: state.busy ? 'disabled' : null },
+            on: { click: () => refresh() },
+        }, [icon(state.busy ? 'fa-spinner fa-spin' : 'fa-rotate'), el('span', { text: state.busy ? 'Working...' : 'Refresh' })]),
+        el('span', { className: 'sbtw-spacer' }),
+        // Live region: progress updates are announced without stealing focus.
+        el('span', {
+            className: 'sbtw-status',
+            text: state.status,
+            attrs: { role: 'status', 'aria-live': 'polite' },
+        }),
+        canPost ? button('Post', 'sbtw-btn sbtw-btn-primary', () => publish(postField.value)) : null,
+    ]);
 }
 
 function composer() {
     const me = personaAccount();
     if (!me) {
-        return el('div', { className: 'sbtw-empty', text: 'Set a persona to post. Everything else still works.' });
+        return el('div', { className: 'sbtw-composer' }, [
+            el('div', { className: 'sbtw-empty', text: 'Set a persona to post. Everything else still works.' }),
+            composerBar(false),
+        ]);
     }
 
     const field = el('textarea', {
@@ -454,68 +586,82 @@ function composer() {
         ]));
     }
 
-    const picker = el('input', { attrs: { type: 'file', accept: 'image/*', hidden: 'hidden' } });
-    picker.addEventListener('change', async () => {
-        const file = picker.files?.[0];
-        picker.value = ''; // cleared immediately so the same file can be picked again
-        if (!file) {
-            return;
-        }
-        // Late uploads must not attach to a newer pick or to a post published since.
-        const mine = ++uploadToken;
-        const targetDraft = state.draft;
-        try {
-            const url = await api.uploadImage(file);
-            if (mine !== uploadToken || state.draft !== targetDraft) {
-                return;
-            }
-            targetDraft.image = url;
-            render();
-        } catch (error) {
-            console.error('[Twitlike] image upload failed', error);
-            toast(error.message, 'error');
-        }
-    });
-
     return el('div', { className: 'sbtw-composer' }, [
         el('div', { className: 'sbtw-post-row' }, [
             avatarNode(me, 'md'),
             el('div', { className: 'sbtw-post-main' }, [field, extras]),
         ]),
-        el('div', { className: 'sbtw-composer-bar' }, [
-            picker,
-            button('Image', 'sbtw-btn sbtw-btn-quiet', () => picker.click(), { iconName: 'fa-image' }),
-            api.getSettings().polls && !state.draft.poll
-                ? button('Poll', 'sbtw-btn sbtw-btn-quiet', () => { state.draft.poll = ['', '']; render(); }, { iconName: 'fa-square-poll-vertical' })
-                : null,
-            el('span', { className: 'sbtw-spacer' }),
-            button('Post', 'sbtw-btn sbtw-btn-primary', () => publish(field.value)),
-        ]),
+        composerBar(true, field),
     ]);
 }
 
 function timelineView() {
-    const posts = visiblePosts();
     // Plain toggle buttons: a real tab pattern needs arrow-key roving focus and
     // tabpanels we do not have, and mislabelled tabs are worse than honest buttons.
     const tabs = el('div', { className: 'sbtw-tabs' }, [
         tabButton('Main', 'main'),
         tabButton('Following', 'following'),
     ]);
-
-    const list = posts.length
-        ? el('div', { className: 'sbtw-list' }, posts.map(postNode))
-        : el('div', { className: 'sbtw-empty' }, [
-            el('p', { text: state.tab === 'following' ? 'Nothing from anyone you follow yet.' : 'Nothing here yet.' }),
+    const results = el('div', { className: 'sbtw-timeline-results' });
+    const resultStatus = el('span', {
+        className: 'sbtw-search-status',
+        attrs: { role: 'status', 'aria-live': 'polite' },
+    });
+    const search = el('input', {
+        className: 'sbtw-input sbtw-timeline-search',
+        attrs: {
+            type: 'search',
+            placeholder: 'Search this timeline',
+            'aria-label': 'Search this timeline',
+            autocomplete: 'off',
+            value: state.timelineSearch,
+        },
+    });
+    search.value = state.timelineSearch;
+    const drawResults = () => {
+        state.timelineSearch = search.value;
+        const query = search.value.trim();
+        const { entries, total } = visibleTimelineEntries(query);
+        resultStatus.textContent = query ? `${total} ${total === 1 ? 'result' : 'results'}` : '';
+        if (entries.length) {
+            results.replaceChildren(el('div', { className: 'sbtw-list' },
+                entries.map(({ post, repost }) => postNode(post, repost))));
+            return;
+        }
+        results.replaceChildren(el('div', { className: 'sbtw-empty' }, [
+            el('p', {
+                text: query
+                    ? 'No posts or replies match that search.'
+                    : state.tab === 'following' ? 'Nothing from anyone you follow yet.' : 'Nothing here yet.',
+            }),
             el('p', {
                 className: 'sbtw-hint',
-                text: state.tab === 'following'
-                    ? 'Follow someone from their profile, or from Who to follow.'
-                    : 'Invite a character in Settings, then hit Refresh.',
+                text: query
+                    ? 'Try a name, handle, post, reply or poll option.'
+                    : state.tab === 'following'
+                        ? 'Follow someone from their profile, or from Who to follow.'
+                        : 'Invite a character in Settings, then hit Refresh.',
             }),
-        ]);
+        ]));
+    };
+    let timer = null;
+    search.addEventListener('input', () => {
+        state.timelineSearch = search.value;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            if (search.isConnected) {
+                drawResults();
+            }
+        }, SEARCH_DEBOUNCE_MS);
+    });
+    drawResults();
 
-    return el('div', {}, [tabs, composer(), refreshBar(), list]);
+    return el('div', {}, [
+        tabs,
+        el('div', { className: 'sbtw-timeline-search-row' }, [search, resultStatus]),
+        composer(),
+        results,
+    ]);
 }
 
 function tabButton(label, value) {
@@ -525,22 +671,6 @@ function tabButton(label, value) {
         attrs: { type: 'button', 'aria-pressed': String(state.tab === value) },
         on: { click: () => { state.tab = value; render(); } },
     });
-}
-
-function refreshBar() {
-    return el('div', { className: 'sbtw-refresh-bar' }, [
-        el('button', {
-            className: 'sbtw-btn sbtw-btn-primary sbtw-refresh',
-            attrs: { type: 'button', disabled: state.busy ? 'disabled' : null },
-            on: { click: () => refresh() },
-        }, [icon(state.busy ? 'fa-spinner fa-spin' : 'fa-rotate'), el('span', { text: state.busy ? 'Working...' : 'Refresh' })]),
-        // Live region: progress updates are announced without stealing focus.
-        el('span', {
-            className: 'sbtw-status',
-            text: state.status,
-            attrs: { role: 'status', 'aria-live': 'polite' },
-        }),
-    ]);
 }
 
 function profileView() {
@@ -555,6 +685,11 @@ function profileView() {
         .filter(item => item.type === 'like' && item.actorKey === account.key)
         .map(item => state.feed.posts.find(post => post.id === item.postId))
         .filter(Boolean);
+    const reposts = state.feed.interactions
+        .filter(item => item.type === 'repost' && item.actorKey === account.key)
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(item => ({ item, post: state.feed.posts.find(post => post.id === item.postId) }))
+        .filter(entry => entry.post);
     const media = posts.filter(post => post.image?.url);
 
     const follows = state.session?.follows ?? {};
@@ -577,9 +712,10 @@ function profileView() {
                     () => toggleFollow(account.key))
                 : null,
         ]),
-        section('Posts', posts.map(postNode), 'Nothing posted yet.'),
-        section('Likes', liked.map(postNode), 'Nothing liked yet.'),
-        section('Media', media.map(postNode), 'No pictures yet.'),
+        section('Posts', posts.map(post => postNode(post)), 'Nothing posted yet.'),
+        section('Reposts', reposts.map(({ item, post }) => postNode(post, item)), 'Nothing reposted yet.'),
+        section('Likes', liked.map(post => postNode(post)), 'Nothing liked yet.'),
+        section('Media', media.map(post => postNode(post)), 'No pictures yet.'),
     ]);
 }
 
@@ -599,7 +735,7 @@ function notificationsView() {
     // Replies to MY comments on other people's posts are notifications too.
     const myReplyIds = new Set(
         state.feed.interactions
-            .filter(item => item.type === 'reply' && item.actorKey === me.key && myPostIds.has(item.postId))
+            .filter(item => item.type === 'reply' && item.actorKey === me.key)
             .map(item => item.id),
     );
     const rows = state.feed.interactions
@@ -615,10 +751,16 @@ function notificationsView() {
         on: {
             click: () => {
                 state.view = 'timeline';
+                state.tab = 'main';
+                state.timelineSearch = '';
                 // Only a reply gives you something to answer; likes just take you to the post.
-                state.replyingTo = item.type === 'reply' ? item.postId : null;
-                pendingReplyFocus = null;
-                render();
+                if (item.type === 'reply') {
+                    setReplyTarget(item.postId, item.id, { toggle: false });
+                } else {
+                    state.replyingTo = null;
+                    pendingReplyFocus = null;
+                    render();
+                }
                 scrollToPost(item.postId);
             },
         },
@@ -1180,12 +1322,22 @@ function publish(text) {
     render();
 }
 
-function addReply(post, text) {
+function addReply(post, text, parentInteractionId = null) {
     if (state.busy) {
         return;
     }
     const me = personaAccount();
     if (!me) {
+        return;
+    }
+    const parent = parentInteractionId
+        ? interactionsFor(post.id).find(item => item.type === 'reply' && item.id === parentInteractionId)
+        : null;
+    if (parentInteractionId && !parent) {
+        toast('That reply is no longer available.', 'warning');
+        state.replyingTo = null;
+        pendingReplyFocus = null;
+        render();
         return;
     }
     const context = globalThis.SillyTavern.getContext();
@@ -1195,14 +1347,43 @@ function addReply(post, text) {
         type: 'reply',
         actorKey: me.key,
         content: text,
-        parentInteractionId: null,
+        parentInteractionId: parent?.id ?? null,
         pollOptionIndex: null,
         createdAt: Date.now(),
         actorSnapshot: snapshotOf(me),
     });
+    const target = { postId: post.id, parentInteractionId: parent?.id ?? null };
     state.replyingTo = null;
-    replyDrafts.delete(post.id);
+    replyDrafts.delete(replyTargetKey(target));
     pendingReplyFocus = null;
+    persist();
+    render();
+}
+
+async function deleteReply(reply) {
+    const me = personaAccount();
+    if (state.busy || !me || reply.actorKey !== me.key) {
+        return;
+    }
+    const body = state.body;
+    const sessionId = state.session?.id;
+    const feed = state.feed;
+    const context = globalThis.SillyTavern.getContext();
+    const confirmed = await context.Popup.show.confirm(
+        'Delete this reply?',
+        'Replies to it will stay in the conversation.',
+    );
+    if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed || state.busy) {
+        return;
+    }
+    feed.interactions = feed.interactions
+        .filter(item => item.id !== reply.id)
+        .map(item => item.parentInteractionId === reply.id ? { ...item, parentInteractionId: null } : item);
+    if (state.replyingTo?.parentInteractionId === reply.id) {
+        replyDrafts.delete(replyTargetKey(state.replyingTo));
+        state.replyingTo = null;
+        pendingReplyFocus = null;
+    }
     persist();
     render();
 }
@@ -1419,6 +1600,9 @@ async function resetTimeline() {
     feed.interactions = [];
     state.busy = false;
     state.view = 'timeline';
+    state.timelineSearch = '';
+    state.replyingTo = null;
+    replyDrafts.clear();
     render();
 }
 
@@ -1455,6 +1639,7 @@ function closeFeedInternal(cancelTransition, allowExpectedPersonaSwitch = false)
     state.busy = false;
     state.draft = { text: '', image: '', poll: null };
     state.draftOwner = null;
+    state.timelineSearch = '';
     replyDrafts.clear();
     pendingReplyFocus = null;
     byPost = new Map();
@@ -1595,6 +1780,7 @@ async function startFeed() {
     state.tab = 'main';
     state.profileKey = null;
     state.replyingTo = null;
+    state.timelineSearch = '';
     state.draft = { text: '', image: '', poll: null };
     const owner = accounts.find(account => account.kind === KIND_PERSONA);
     state.draftOwner = session && owner ? `${session.id}:${owner.key}` : null;

@@ -16,6 +16,7 @@ import {
     handleFromName,
     inertText,
     materializeRefresh,
+    matchesTimelineQuery,
     needsCatchUp,
     normalizeSettings,
     parseJsonObject,
@@ -660,6 +661,36 @@ test('formatTimeline stays inside its character budget and keeps the newest post
     assert.ok(timeline.length < 50_000, `timeline was ${timeline.length} chars`);
     assert.match(timeline, /newest=true/);
     assert.doesNotMatch(timeline, /oldest=true/);
+});
+
+// --- timeline search ------------------------------------------------------
+
+test('matchesTimelineQuery searches bodies, authors, polls and replies', () => {
+    const post = {
+        id: 'p1',
+        authorKey: 'character:ada.png',
+        authorSnapshot: { name: 'Ada', handle: 'ada' },
+        body: 'Café plans tonight',
+        createdAt: NOW,
+        poll: { question: 'Where?', options: [{ text: 'Rooftop' }, { text: 'Dive bar' }] },
+    };
+    const replies = [
+        { type: 'reply', postId: 'p1', content: 'the rooftop has wasps', actorSnapshot: { name: 'Bo', handle: 'bo' } },
+        { type: 'like', postId: 'p1', actorSnapshot: { name: 'Kettle Logic', handle: 'kettlelogic' } },
+        { type: 'reply', postId: 'other', content: 'unrelated', actorSnapshot: { name: 'Bo', handle: 'bo' } },
+    ];
+
+    assert.equal(matchesTimelineQuery(post, replies, ''), true);
+    assert.equal(matchesTimelineQuery(post, replies, '  '), true);
+    assert.equal(matchesTimelineQuery(post, replies, 'cafe PLAN'), true); // case and accents ignored
+    assert.equal(matchesTimelineQuery(post, replies, '@ada'), true);
+    assert.equal(matchesTimelineQuery(post, replies, 'rooftop'), true); // poll option and reply text
+    assert.equal(matchesTimelineQuery(post, replies, 'wasps'), true);
+    assert.equal(matchesTimelineQuery(post, replies, 'where'), true); // poll question
+    // A reply match surfaces its root post; likes and other posts' replies do not.
+    assert.equal(matchesTimelineQuery(post, replies, 'Bo'), true);
+    assert.equal(matchesTimelineQuery(post, [], 'wasps'), false);
+    assert.equal(matchesTimelineQuery(post, replies, 'no such thing'), false);
 });
 
 // --- carryover ------------------------------------------------------------

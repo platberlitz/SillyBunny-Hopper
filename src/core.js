@@ -524,6 +524,41 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
     return blocks.reverse().join('\n\n').trim();
 }
 
+function searchableText(value) {
+    return String(value ?? '')
+        .normalize('NFKD')
+        .replace(/\p{Mark}/gu, '')
+        .toLocaleLowerCase();
+}
+
+/** A reply match returns its root post, keeping search results readable as conversations. */
+export function matchesTimelineQuery(post, interactions, query) {
+    const needle = searchableText(query).trim();
+    if (!needle) {
+        return true;
+    }
+    const values = [
+        post.body,
+        post.authorSnapshot?.name,
+        post.authorSnapshot?.handle,
+        post.authorSnapshot?.handle ? `@${post.authorSnapshot.handle}` : '',
+        post.poll?.question,
+        ...(post.poll?.options ?? []).map(option => option.text),
+    ];
+    for (const reply of interactions) {
+        if (reply.type !== 'reply' || reply.postId !== post.id) {
+            continue;
+        }
+        values.push(
+            reply.content,
+            reply.actorSnapshot?.name,
+            reply.actorSnapshot?.handle,
+            reply.actorSnapshot?.handle ? `@${reply.actorSnapshot.handle}` : '',
+        );
+    }
+    return values.some(value => searchableText(value).includes(needle));
+}
+
 export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '' }) {
     const activeKeys = new Set(active.map(account => account.key));
     const roster = accounts

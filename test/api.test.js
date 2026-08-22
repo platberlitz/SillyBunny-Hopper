@@ -461,6 +461,31 @@ test('loadFeed busts the cache, because the file is overwritten in place', async
     assert.equal(fetchCalls[0][1].cache, 'no-store');
 });
 
+test('a reply to a specific reply keeps its parent through save and load', async () => {
+    const stored = {
+        version: 1,
+        posts: [{ id: 'p1', authorKey: 'character:ada.png', body: 'root', createdAt: 1 }],
+        interactions: [
+            { id: 'r1', postId: 'p1', type: 'reply', actorKey: 'character:bo.png', content: 'first', createdAt: 2, parentInteractionId: null },
+            { id: 'r2', postId: 'p1', type: 'reply', actorKey: 'persona:me.png', content: 'answering Bo', createdAt: 3, parentInteractionId: 'r1' },
+        ],
+    };
+    updateSettings({ shards: ['/user/files/twitterlike-feed.json'] });
+    fakeFetch(() => ({ ok: true, status: 200, json: async () => stored }));
+    const feed = await loadFeed();
+    assert.equal(feed.interactions[1].parentInteractionId, 'r1');
+    assert.equal(feed.interactions[1].postId, 'p1');
+
+    feed.interactions.push({
+        id: 'r3', postId: 'p1', type: 'reply', actorKey: 'persona:me.png',
+        content: 'thread continues', parentInteractionId: 'r2', pollOptionIndex: null, createdAt: 4,
+    });
+    fakeFetch(() => ({ ok: true, status: 200, json: async () => ({ path: '/user/files/twitterlike-feed.json' }) }));
+    await writeFeed(feed);
+    const saved = JSON.parse(decodeUpload(fetchCalls.find(([url]) => url === '/api/files/upload')[1]));
+    assert.equal(saved.interactions.find(item => item.id === 'r3').parentInteractionId, 'r2');
+});
+
 // --- connections ----------------------------------------------------------
 
 test('listConnectionProfiles is empty rather than fatal when Connection Manager is off', () => {

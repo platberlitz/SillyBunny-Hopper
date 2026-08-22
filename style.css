@@ -302,6 +302,17 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     border-bottom: 1px solid var(--sbtw-divider);
 }
 
+.sbtw-repost-context {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.35rem;
+    padding-left: calc(2.75rem + var(--sbtw-gap));
+    color: var(--sbtw-muted);
+    font-size: 0.85em;
+    font-weight: 600;
+}
+
 .sbtw-post-row {
     display: flex;
     gap: var(--sbtw-gap);
@@ -435,6 +446,10 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     transform: scale(1.05);
 }
 
+.sbtw-action-danger:hover:not(:disabled) {
+    color: var(--sbtw-danger);
+}
+
 .sbtw-action-count {
     font-variant-numeric: tabular-nums;
 }
@@ -444,7 +459,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 .sbtw-replies {
     margin-top: 0.6rem;
     padding-left: 0.5rem;
-    border-left: 2px solid var(--sbtw-divider);
+    border-left: 1px solid var(--sbtw-divider);
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
@@ -456,7 +471,14 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 .sbtw-reply-main {
+    flex: 1;
     min-width: 0;
+}
+
+.sbtw-reply-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.15rem;
 }
 
 /* --- composer ----------------------------------------------------------- */
@@ -487,6 +509,26 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 .sbtw-composer-input {
     border: none;
     padding-left: 0;
+}
+
+.sbtw-timeline-search-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: var(--sbtw-gap) 0;
+    border-bottom: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-timeline-search {
+    flex: 1;
+    min-width: 0;
+}
+
+.sbtw-search-status {
+    flex: 0 0 auto;
+    color: var(--sbtw-muted);
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
 }
 
 .sbtw-number {
@@ -627,14 +669,6 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     border-color: var(--sbtw-danger-border);
     background: var(--sbtw-danger-bg);
     color: var(--sbtw-danger);
-}
-
-.sbtw-refresh-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: var(--sbtw-gap) 0;
-    border-bottom: 1px solid var(--sbtw-divider);
 }
 
 .sbtw-status {
@@ -838,6 +872,15 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     margin: 0;
     padding: 1rem 0.75rem;
     text-align: center;
+}
+
+@media (pointer: coarse) {
+    .sbtw-nav-item,
+    .sbtw-action,
+    .sbtw-poll-option,
+    .sbtw-btn {
+        min-height: 44px;
+    }
 }
 
 /* --- focus and motion --------------------------------------------------- */

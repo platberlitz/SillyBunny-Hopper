@@ -1,7 +1,7 @@
 {
     "display_name": "Twitlike",
     "author": "platberlitz",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Persona-scoped pretend social timelines with editable profiles, Scenario Notes and independent character casts. Optionally feeds recent activity back into chats.",
     "requires": [],
     "optional": [],

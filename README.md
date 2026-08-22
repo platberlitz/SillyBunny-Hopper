@@ -1,6 +1,6 @@
 # SillyBunny Twitlike
 
-A pretend social timeline for your own cast. Each timeline session has its own persona, profile, Scenario Notes, character cast, follows and history. Pressing **Refresh** hands that session to a model that writes a batch of posts, replies, reposts, likes and follows in one go. You can post by hand too, and like or reply to anything.
+A pretend social timeline for your own cast. Each timeline session has its own persona, profile, Scenario Notes, character cast, follows and history. Pressing **Refresh** hands that session to a model that writes a batch of posts, replies, reposts, likes and follows in one go. You can post by hand too, and like or reply to anything - including a specific reply inside a conversation.
 
 It's fake. Nothing is posted anywhere real, and no account here belongs to a person who exists. One honest caveat: pressing Refresh sends your characters' profiles and the recent timeline to whichever model connection you have configured - that can be a local model, or a remote API. If you wouldn't paste it into that API's playground, don't put it on the timeline.
 
@@ -25,9 +25,11 @@ No server plugin, no build step, no dependencies.
 
 Open it from **Twitlike** in the Character Menu, beside Roleplay and Conversation. It replaces the chat workspace while it is open, so the top bar stays usable and **Home** returns to the landing page. The session picker at the top switches timelines; **New timeline** starts another one. Switching to a session also equips its persona. **Main** is everything, **Following** is only the accounts that session's persona follows.
 
-Write a post in the box at the top. You can attach one picture from your computer and add a poll of two to four options. Posting by hand doesn't need an AI connection at all.
+Write a post in the box at the top. You can attach one picture from your computer and add a poll of two to four options; **Refresh** sits in the same button row, so starting the model and writing by hand share one place. A search box above it filters the current timeline by post text, author, handle, poll text or anything said in the replies.
 
-Every post has three buttons - like, repost, reply. Replies show underneath with a 'Replying to @someone' line rather than nesting forever, which is deliberate: nested threads look clever and read badly.
+Every post has three buttons - like, repost, reply - and every reply has its own reply button, so you can answer one comment in particular rather than the whole post. Your own replies can be deleted without touching the rest of the conversation. Replies show underneath with a 'Replying to @someone' line rather than nesting forever, which is deliberate: nested threads look clever and read badly.
+
+**Main** is everything. **Following** is what the accounts your persona follows are up to: their posts plus their reposts, with an attribution line on reposted items. Profiles have Posts, Reposts, Likes and Media sections.
 
 Click any name to open that account's profile, where you can follow or unfollow.
 
@@ -80,7 +82,7 @@ All of them live inside the Twitlike workspace, under **Settings** in the left n
 
 ## Not in this version
 
-GIFs and stickers, profile banners, quote-posts, threads deeper than one reply, lorebook keyword context, and showing generated pictures back to the model. Say if you want any of them and I'll have a look.
+GIFs and stickers, profile banners, quote-posts, visually nested thread trees, lorebook keyword context, and showing generated pictures back to the model. Say if you want any of them and I'll have a look.
 
 There's also no NoodleR equivalent and there isn't going to be one.
 
