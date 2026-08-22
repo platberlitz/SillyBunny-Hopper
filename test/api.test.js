@@ -65,7 +65,12 @@ function makeContext(overrides = {}) {
 function fakeFetch(handler) {
     globalThis.fetch = async (url, init) => {
         fetchCalls.push([String(url), init]);
-        return handler(String(url), init);
+        const response = await handler(String(url), init);
+        // Bodies are read as text now; let fixtures keep declaring them as objects.
+        if (response && !response.text && response.json) {
+            response.text = async () => JSON.stringify(await response.json());
+        }
+        return response;
     };
 }
 
@@ -201,9 +206,22 @@ test('loadFeed returns an empty feed when nothing has been saved yet', async () 
 
 test('a corrupt feed file fails closed instead of becoming a writable empty feed', async () => {
     updateSettings({ shards: ['/user/files/twitterlike-feed.json'] });
-    fakeFetch(() => ({ ok: true, status: 200, json: async () => { throw new Error('bad json'); } }));
-    await assert.rejects(() => loadFeed(), /could not be read/);
+    // What a proxy or a signed-out session hands back instead of the file.
+    fakeFetch(() => ({ ok: true, status: 200, text: async () => '<!DOCTYPE html><title>SillyBunny</title>' }));
+    await assert.rejects(() => loadFeed(), /is not a timeline - it starts with "<!DOCTYPE html>/);
     assert.equal(fetchCalls.filter(([url]) => url === '/api/files/upload').length, 0);
+});
+
+test('an empty feed file starts over instead of locking the timeline shut', async () => {
+    updateSettings({ shards: ['/user/files/twitterlike-feed.json'] });
+    fakeFetch(() => ({ ok: true, status: 200, text: async () => '  \n' }));
+    assert.deepEqual(await loadFeed(), { version: 1, posts: [], interactions: [] });
+    assert.equal(fetchCalls.filter(([url]) => url === '/api/files/upload').length, 0);
+});
+
+test('an upload that answers with a web page says so instead of throwing a parser message', async () => {
+    fakeFetch(() => ({ ok: true, status: 200, text: async () => '<!DOCTYPE html><title>Login</title>' }));
+    await assert.rejects(() => writeFeed({ posts: [], interactions: [] }), /still signed in/);
 });
 
 test('a failed feed read reports the status and never uploads', async () => {

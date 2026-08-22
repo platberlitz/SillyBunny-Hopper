@@ -231,18 +231,46 @@ export async function loadFeed() {
     if (!path) {
         return { ...EMPTY_FEED };
     }
+    const url = `${path}?t=${Date.now()}`;
+    let text = '';
     try {
-        const response = await fetch(`${path}?t=${Date.now()}`, { cache: 'no-store' });
+        const response = await fetch(url, { cache: 'no-store' });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
-        const raw = await response.json();
-        if (!isObj(raw) || !Array.isArray(raw.posts) || !Array.isArray(raw.interactions)) {
-            throw new Error('the file does not contain a timeline');
-        }
-        return normalizeFeed(raw);
+        // Read as text, not json(): browsers word the parse failure differently, and the
+        // body itself is the only thing that says what actually went wrong.
+        text = await response.text();
     } catch (error) {
-        throw new Error(`The saved timeline could not be read (${error.message}). Try again, or reset the timeline to start over.`);
+        console.error('[Twitlike] the saved timeline could not be fetched', url, error);
+        throw new Error(`The saved timeline could not be read from ${path} (${error.message}). Try again, or reset the timeline to start over.`);
+    }
+    // An interrupted or failed write leaves an empty file behind. There is no history in
+    // there to protect, so start over rather than locking the user out of their feed.
+    if (!text.trim()) {
+        return { ...EMPTY_FEED };
+    }
+    let raw = null;
+    try {
+        raw = JSON.parse(text.replace(/^\uFEFF/, ''));
+    } catch {
+        raw = null;
+    }
+    if (!isObj(raw) || !Array.isArray(raw.posts) || !Array.isArray(raw.interactions)) {
+        console.error('[Twitlike] the saved timeline is not a timeline file', url, text.slice(0, 300));
+        throw new Error(`The file at ${path} is not a timeline - it starts with "${text.trim().slice(0, 40)}". If that looks like a web page, the server did not hand back the saved file.`);
+    }
+    return normalizeFeed(raw);
+}
+
+/** Reads a JSON response, and says what actually arrived when the body is not JSON. */
+async function readJson(response, what) {
+    const text = await response.text();
+    try {
+        return JSON.parse(text.replace(/^\uFEFF/, ''));
+    } catch {
+        console.error(`[Twitlike] ${what} did not answer with JSON`, response.url, text.slice(0, 300));
+        throw new Error(`${what} answered with "${text.trim().slice(0, 40)}" instead of data. Is this SillyBunny tab still signed in?`);
     }
 }
 
@@ -266,7 +294,7 @@ export async function writeFeed(feed) {
     if (!response.ok) {
         throw new Error(`Could not save the feed (${response.status})`);
     }
-    const { path } = await response.json();
+    const { path } = await readJson(response, 'The file upload');
     const settings = getSettings();
     if (settings.shards[0] !== path) {
         updateSettings({ shards: [path] });
@@ -302,7 +330,7 @@ export async function uploadImage(file) {
     if (!response.ok) {
         throw new Error(`Could not upload that image (${response.status})`);
     }
-    const { path } = await response.json();
+    const { path } = await readJson(response, 'The image upload');
     return path;
 }
 

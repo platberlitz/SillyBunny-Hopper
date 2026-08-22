@@ -26,6 +26,8 @@
     z-index: 2;
 }
 
+/* The label reads as the third mode on desktop. Narrow headers keep the hashtag only,
+ * where the button is still named by its aria-label and title. */
 .sbtw-launch span {
     display: inline;
 }
@@ -38,26 +40,30 @@
 
 @media (max-width: 900px) {
     #right-nav-panel.openDrawer > .sb-character-shell-header .sb-character-shell-mode-toggle:has(+ .sbtw-launch) {
-        padding-right: 93px;
+        padding-right: 45px;
     }
 
     .sbtw-launch {
         top: 20px;
         right: 69px;
-        width: 88px;
-        min-width: 88px;
+        width: 40px;
+        min-width: 40px;
         min-height: 34px;
-        padding: 8px 9px;
+        padding: 8px 0;
+    }
+
+    .sbtw-launch span {
+        display: none;
     }
 
     #right-nav-panel.openDrawer > .sb-character-shell-header:has(> .sbtw-launch) {
-        padding-right: calc(var(--sb-shell-panel-padding-inline) + 218px);
+        padding-right: calc(var(--sb-shell-panel-padding-inline) + 170px);
     }
 }
 
 @media (max-width: 768px) {
     #right-nav-panel.openDrawer > .sb-character-shell-header .sb-character-shell-mode-toggle:has(+ .sbtw-launch) {
-        padding-right: 93px;
+        padding-right: 45px;
     }
 
     .sbtw-launch {

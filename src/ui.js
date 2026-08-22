@@ -1289,7 +1289,8 @@ async function resetFailedTimeline() {
         await api.writeFeed({ version: 1, posts: [], interactions: [] });
     } catch (error) {
         console.error('[Twitlike] resetting the saved feed failed', error);
-        toast('The saved file could not be cleared - try again.', 'error');
+        // Say why: a reset that keeps failing silently looks like a reset that does nothing.
+        toast(String(error?.message ?? 'The saved file could not be cleared - try again.'), 'error');
         return;
     }
     if (state.body === body) {
