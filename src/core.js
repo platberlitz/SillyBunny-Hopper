@@ -1096,3 +1096,54 @@ export function needsCatchUp(settings, now = Date.now(), session = null) {
     }
     return now - (session?.lastRefreshAt ?? settings.lastRefreshAt) >= settings.catchUpHours * 3600 * 1000;
 }
+
+// --- @mentions in the composer ---------------------------------------------
+
+/** The @token the caret sits in, as `{ start, query }` (start = index of the '@'), or null. */
+export function mentionQueryAt(text, caret) {
+    const before = String(text ?? '').slice(0, Math.max(0, Number(caret) || 0));
+    const match = before.match(/(?:^|[\s([{"'])@([a-z0-9_]*)$/i);
+    if (!match) {
+        return null;
+    }
+    return { start: before.length - match[1].length - 1, query: match[1].toLowerCase() };
+}
+
+/** Known accounts that fit the typed query: handle prefix first, then name prefix, then anything containing it. */
+export function matchMentionAccounts(accounts, query, limit = 6) {
+    const needle = String(query ?? '').toLowerCase();
+    const scored = [];
+    for (const account of Array.isArray(accounts) ? accounts : []) {
+        const handle = String(account?.handle ?? '').toLowerCase();
+        const name = String(account?.name ?? '').toLowerCase();
+        if (!handle) {
+            continue;
+        }
+        let score = -1;
+        if (!needle) {
+            score = 0;
+        } else if (handle.startsWith(needle)) {
+            score = 3;
+        } else if (name.startsWith(needle)) {
+            score = 2;
+        } else if (handle.includes(needle) || name.includes(needle)) {
+            score = 1;
+        }
+        if (score >= 0) {
+            scored.push({ account, score });
+        }
+    }
+    return scored
+        .sort((a, b) => b.score - a.score || String(a.account.name).localeCompare(String(b.account.name)))
+        .slice(0, limit)
+        .map(entry => entry.account);
+}
+
+/** Replaces the @token between `start` and `caret` with `@handle ` and returns the new text and caret. */
+export function insertMention(text, start, caret, handle) {
+    const source = String(text ?? '');
+    const insert = `@${handle} `;
+    const next = source.slice(0, start) + insert + source.slice(caret);
+    return { text: next, caret: start + insert.length };
+}
+

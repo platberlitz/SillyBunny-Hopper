@@ -1,100 +1,95 @@
 # SillyBunny Twitlike
 
-A pretend social timeline for your own cast. Each timeline session has its own persona, profile, Scenario Notes, character cast, follows and history. Pressing **Refresh** hands that session to a model that writes a batch of posts, replies, reposts, likes and follows in one go. You can post by hand too, and like or reply to anything - including a specific reply inside a conversation.
+A pretend social timeline for a SillyBunny cast: persona-scoped sessions with their own profiles, Scenario Notes, invited characters, follows and history, filled by one model request per **Refresh**, with posting, replies, reposts, likes, polls and pictures by hand.
 
-It's fake. Nothing is posted anywhere real, and no account here belongs to a person who exists. One honest caveat: pressing Refresh sends your characters' profiles and the recent timeline to whichever model connection you have configured - that can be a local model, or a remote API. If you wouldn't paste it into that API's playground, don't put it on the timeline.
+![Twitlike: the Main timeline with posts and threaded replies](screenshots/timeline.png)
 
-I built this after seeing the Noodle in Marinara Engine and wanting the same thing in SillyBunny. This isn't a port - none of Marinara's plumbing would survive the trip - but the idea is theirs and the good structural decisions are theirs too. Credit where it's due.
+| A character's profile | The cast in Settings |
+| --- | --- |
+| ![A character profile with bio, location, follow counts and their posts](screenshots/profile.png) | ![The Who posts section: invited characters, ambient strangers and accounts per refresh](screenshots/settings.png) |
 
-The bit that makes it more than a toy is **carryover**: recent activity can be dropped into a chat's prompt, so a character can reference the argument they had on the timeline this morning. That's off by default.
+| Typing @ in the composer | On a phone |
+| --- | --- |
+| ![The mention picker listing known accounts under the composer](screenshots/mentions.png) | <img src="screenshots/mobile.png" alt="Twitlike on a phone" width="300"> |
 
-## Install
+Everything here is fiction. Nothing is posted anywhere real, and no account belongs to a person who exists. One caveat worth stating plainly: **Refresh** sends the characters' profiles and the recent timeline to whichever model connection is configured, local or remote. Anything that should not reach that API should not be on the timeline.
 
-1. Open **Customize** and go to **Extensions**.
-2. Choose **Install extension** and paste this URL:
+The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Devs/Marinara-Engine); this is not a port, none of Marinara's plumbing would survive the trip, but the shape and the good structural decisions are theirs. Credit where it is due.
 
-```
-https://github.com/platberlitz/SillyBunny-Twitlike
-```
+## What it does
 
-3. Open the **Character Menu** and choose **Twitlike** next to Roleplay and Conversation. It's also in the wand menu if you prefer.
-
-No server plugin, no build step, no dependencies.
+- Runs as a chat workspace: **Twitlike** sits in the Character Menu next to Roleplay and Conversation (and in the wand menu), replaces the chat area while open, and leaves the top bar usable; **Home** returns to the landing page.
+- Keeps one or more timeline sessions, each owned by a persona with its own name, type, profile, cast, follows and history. Switching sessions equips that session's persona.
+- **Refresh** picks a few invited characters (the ones quiet longest), writes profiles for any that lack one, and asks the model for a batch of posts, replies, reposts, likes, follows and poll votes in a single request.
+- Posting by hand, with one picture from disk and a poll of two to four options; **Refresh** lives in the same button row.
+- Like, repost and reply on every post; reply to a specific comment; delete your own replies and posts.
+- `@` in a composer lists the accounts the session knows (persona, invited characters, ambient strangers); arrows move, Enter or Tab inserts the handle.
+- **Main** is everything; **Following** is the accounts the persona follows, their posts and reposts with an attribution line. A search box filters the current timeline by text, author, handle, poll text or reply text.
+- Profiles with Posts, Reposts, Likes and Media sections, and follow/unfollow from any profile.
+- Optional **carryover**: recent activity dropped into a chat's prompt, so a character can refer to the argument they had on the timeline this morning. Off by default.
+- Optional pictures through the existing image generation, an optional catch-up refresh on open, and a tone text that is the only editable part of the prompt.
 
 ## Using it
 
-Open it from **Twitlike** in the Character Menu, beside Roleplay and Conversation. It replaces the chat workspace while it is open, so the top bar stays usable and **Home** returns to the landing page. The session picker at the top switches timelines; **New timeline** starts another one. Switching to a session also equips its persona. **Main** is everything, **Following** is only the accounts that session's persona follows.
+**Opening it.** Choose **Twitlike** in the Character Menu, beside Roleplay and Conversation, or use the wand menu. The session picker at the top switches timelines; **New timeline** starts another one.
 
-Write a post in the box at the top. You can attach one picture from your computer and add a poll of two to four options; **Refresh** sits in the same button row, so starting the model and writing by hand share one place. A search box above it filters the current timeline by post text, author, handle, poll text or anything said in the replies.
+**Before the first Refresh.** Open **Settings** inside the feed and invite at least one character, apply a host group as the cast, or turn on the ambient strangers. Then press **Refresh** and wait; the status line says what it is doing.
 
-Every post has three buttons - like, repost, reply - and every reply has its own reply button, so you can answer one comment in particular rather than the whole post. Your own replies can be deleted without touching the rest of the conversation. Replies show underneath with a 'Replying to @someone' line rather than nesting forever, which is deliberate: nested threads look clever and read badly.
+**Posting.** Write in the box at the top. **Image** attaches one picture, **Poll** adds two to four options. Type `@` to pick an account to mention; the handle is inserted as `@handle`. Post text is never rendered as HTML: it is inserted as text with `@handles` turned into links, and no markdown, which is also how the real thing works.
 
-**Main** is everything. **Following** is what the accounts your persona follows are up to: their posts plus their reposts, with an attribution line on reposted items. Profiles have Posts, Reposts, Likes and Media sections.
+**Replying.** Every post has like, repost and reply; every reply has its own reply button, so one comment can be answered rather than the whole post. Replies show underneath with a 'Replying to @someone' line instead of nesting forever, which is deliberate: nested threads look clever and read badly.
 
-Click any name to open that account's profile, where you can follow or unfollow.
-
-Before **Refresh** does anything you need to go to **Settings** inside the feed and invite at least one character, apply a host group as the cast, or turn on the ambient accounts. Then press Refresh and wait.
+**Profiles.** Click any name. Follow or unfollow from there.
 
 ## What Refresh actually does
 
-It picks a few of your invited characters - the ones who have been quiet longest, so the same two don't monopolise the timeline - writes profiles for any of them that don't have one yet, and then makes a single request asking for a batch of activity.
+It selects a few invited characters, writes profiles for those that have none, and sends one request. The reply comes back as JSON and is treated as untrusted. Before anything is stored:
 
-The reply comes back as JSON and I don't trust a word of it. Before anything is stored:
+- anything written as the persona is dropped; the model does not speak as the user
+- invented accounts are dropped
+- the quotas are re-applied, whatever the model decided
+- an account cannot like the same post twice, or like its own post
+- repeated text from the same account is dropped
+- votes must name a real option on a real poll
 
-- Anything written as your persona is thrown away. The model does not get to speak as you.
-- Invented accounts are thrown away.
-- The quotas are re-applied, whatever the model decided to do.
-- An account can't like the same post twice, or like its own post.
-- Repeated text from the same account is dropped.
-- Votes have to name a real option on a real poll.
-
-If it drops things you'll usually get a note saying how many, and the details go to the console.
-
-If images are on, each generated image prompt goes through your existing image setup. A failed image just posts the text, which is what you'd want.
+When things are dropped, a note says how many and the details go to the console. With pictures on, each generated image prompt goes through the existing image setup; a failed image just posts the text.
 
 ## Settings
 
-All of them live inside the Twitlike workspace, under **Settings** in the left nav. There's a drawer in the Extensions panel too, but it only has a button to open Twitlike - a timeline doesn't belong in a half-width settings column.
+All of them live inside the Twitlike workspace under **Settings**. The drawer in the Extensions panel only holds a button to open Twitlike; a timeline does not belong in a half-width settings column.
 
 - **Who posts** - which characters take part, whether the ambient strangers join in, and how many accounts are active per refresh.
-- **Timeline identity** - the session's name, freeform type, persona and equipped Scenario Notes. The type tells the model what sort of social setting this is; it is not a hard-coded list.
+- **Timeline identity** - the session's name, freeform type, persona and equipped Scenario Notes. The type tells the model what sort of social setting this is; it is not a fixed list.
 - **Persona profile** - a timeline-only display name, handle, bio and location. It never rewrites the host persona.
-- **Connection** - which connection profile writes the posts. A cheap model is genuinely fine here, and I'd recommend picking a separate one rather than burning your roleplay connection on shitposts. If you leave it unset it uses whatever you're currently connected to.
+- **Connection** - which connection profile writes the posts. A cheap model is fine here; a separate one saves the roleplay connection for roleplay. Unset, it uses the current connection.
 - **How much each refresh makes** - caps for posts, replies, reposts and likes. Defaults are 8, 12, 4 and 18.
-- **Pictures** - off by default. Uses your existing image generation.
-- **Voice** - the tone instructions. This is the only part of the prompt you can edit, on purpose: the rules that keep the response parseable aren't in there, so you can rewrite the voice however you like and you can't break a refresh doing it.
-- **Feeding it back into chats** - carryover. Off by default.
-- **Catching up** - optionally run one refresh when you open the feed, if it's been more than N hours.
+- **Pictures** - off by default; uses the existing image generation.
+- **Voice** - the tone instructions, and the only part of the prompt that can be edited. The rules that keep the response parseable are not in there, so the voice can be rewritten freely without breaking a refresh.
+- **Feeding it back into chats** - carryover, off by default.
+- **Catching up** - optionally one refresh when the feed opens, if more than N hours have passed.
 
-## Things to know
+## Limits worth knowing
 
-**It can't post while SillyBunny is closed.** This is an extension, so it's just JavaScript in your browser tab - there's no server side to it. Marinara can run its timeline on a schedule because it has a server process; I don't. The catch-up setting is the closest thing: one refresh when you open the feed if enough time has passed.
+- **It cannot post while SillyBunny is closed.** This is browser-side JavaScript with no server process; the catch-up setting is the closest thing to a schedule.
+- **The default tone says everyone on the timeline is an adult** and lets characters be rude, petty and explicit where it suits them. It is a text box; rewrite it if that is not wanted.
+- **Each timeline is stored as its own file**, in the user files directory, not in `settings.json`. Everything in `settings.json` is re-serialised and copied into a fifty-deep backup rotation on every save, so a growing feed there would quietly wreck write performance. Settings only hold the session catalogue and small configuration records.
+- **Existing installs migrate without rewriting the feed.** The original timeline becomes a session named **Timeline** and keeps using `twitterlike-feed.json`; new sessions get separate files.
+- **Resetting the timeline** clears posts, replies, likes, reposts and votes in the selected session and keeps its profile, follows and settings. If a saved file cannot be read, the feed offers Retry and Reset rather than silently starting over.
+- Not in this version: GIFs and stickers, profile banners, quote-posts, visually nested thread trees, lorebook keyword context, and showing generated pictures back to the model.
 
-**The default tone says everyone on the timeline is an adult** and lets characters be rude, petty and explicit where it suits them. It's a text box - rewrite it if that's not what you want.
+## Install
 
-**Each timeline is stored as its own file**, not in your settings. That's not an implementation detail I'm proud of, it's the whole reason this is safe to use: everything in `settings.json` gets re-serialised and copied into a fifty-deep backup rotation on every save, so growing feeds in there would quietly wreck your write performance. Posts live in your user files directory instead. Settings only holds the session catalog and small configuration records.
-
-**Existing installs migrate without rewriting the feed.** Your original timeline becomes a session named **Timeline** and keeps using `twitterlike-feed.json`. New sessions get separate files.
-
-**Post text is never rendered as HTML.** It's inserted as text, with `@handles` turned into links. No markdown, which is also how the real thing works.
-
-**Resetting the timeline** clears posts, replies, likes, reposts and votes in the selected session, and keeps its profile, follows and settings. If the saved file can't be read when you open the feed, you get a Retry button and a Reset button - it never silently starts over an unreadable timeline.
-
-## Not in this version
-
-GIFs and stickers, profile banners, quote-posts, visually nested thread trees, lorebook keyword context, and showing generated pictures back to the model. Say if you want any of them and I'll have a look.
-
-There's also no NoodleR equivalent and there isn't going to be one.
+Use SillyBunny's extension installer with `https://github.com/platberlitz/SillyBunny-Twitlike`, or clone it into `data/<user>/extensions/`. No server plugin, no build step, no dependencies.
 
 ## Development
 
-```
+```sh
 npm test        # lint + unit tests, no dependencies
 npm run lint    # syntax, formatting, manifest/package agreement
 ```
 
-Needs Node 20.11 or newer (for `import.meta.dirname` in the lint script). `src/core.js` is pure - prompt building, parsing and every rule above - and is where the tests actually live. `src/api.js` is where nearly all host I/O lives; `index.js` wires the lifecycle events and `src/ui.js` is the only one that touches the DOM.
+Needs Node 20.11 or newer (for `import.meta.dirname` in the lint script). `src/core.js` is pure (prompt building, parsing, every rule above, the mention matcher) and is where the tests live. `src/api.js` holds nearly all host I/O, `index.js` wires the lifecycle events, and `src/ui.js` is the only file that touches the DOM.
 
 ## License
 
-AGPL-3.0. Same as SillyBunny, and same as Marinara Engine, which this borrows its shape from.
+AGPL-3.0, same as SillyBunny and as Marinara Engine, which this borrows its shape from.

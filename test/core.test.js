@@ -24,6 +24,9 @@ import {
     parseRefreshResponse,
     selectParticipants,
     toneText,
+    insertMention,
+    matchMentionAccounts,
+    mentionQueryAt,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -735,3 +738,32 @@ test('needsCatchUp is off unless the user set an interval', () => {
     assert.equal(needsCatchUp(settings({ catchUpHours: 6, lastRefreshAt: NOW - 1000 }), NOW), false);
     assert.equal(needsCatchUp(settings({ catchUpHours: 6, lastRefreshAt: NOW }), NOW, { lastRefreshAt: NOW - 7 * 3600 * 1000 }), true);
 });
+
+test('mentionQueryAt finds the @token under the caret and nothing else', () => {
+    assert.deepEqual(mentionQueryAt('hello @ma', 9), { start: 6, query: 'ma' });
+    assert.deepEqual(mentionQueryAt('@', 1), { start: 0, query: '' });
+    assert.deepEqual(mentionQueryAt('(@Otto', 6), { start: 1, query: 'otto' });
+    assert.equal(mentionQueryAt('mail me at x@y', 14), null, 'an @ inside a word is not a mention');
+    assert.equal(mentionQueryAt('hello @ma there', 15), null, 'the caret is past the token');
+    assert.equal(mentionQueryAt('hello', 5), null);
+});
+
+test('matchMentionAccounts ranks handle prefixes first and caps the list', () => {
+    const accounts = [
+        { name: 'Mara Vell', handle: 'mara_vell' },
+        { name: 'Otto Brand', handle: 'otto_brand' },
+        { name: 'Marlow', handle: 'signal_loss' },
+        { name: 'Amarant', handle: 'amarant' },
+        { name: 'No Handle', handle: '' },
+    ];
+    assert.deepEqual(matchMentionAccounts(accounts, 'ma').map(a => a.handle), ['mara_vell', 'signal_loss', 'amarant']);
+    assert.deepEqual(matchMentionAccounts(accounts, '').map(a => a.handle), ['amarant', 'mara_vell', 'signal_loss', 'otto_brand']);
+    assert.deepEqual(matchMentionAccounts(accounts, 'zzz'), []);
+    assert.equal(matchMentionAccounts(accounts, '', 2).length, 2);
+});
+
+test('insertMention replaces the token and puts the caret after the inserted handle', () => {
+    assert.deepEqual(insertMention('hello @ma there', 6, 9, 'mara_vell'), { text: 'hello @mara_vell  there', caret: 17 });
+    assert.deepEqual(insertMention('@', 0, 1, 'otto_brand'), { text: '@otto_brand ', caret: 12 });
+});
+

@@ -12,6 +12,9 @@ import {
     matchesTimelineQuery,
     needsCatchUp,
     snapshotOf,
+    insertMention,
+    matchMentionAccounts,
+    mentionQueryAt,
 } from './core.js';
 import * as api from './api.js';
 
@@ -479,6 +482,7 @@ function replyComposer(post) {
     // The draft survives re-renders; focus is only claimed when the composer opens.
     field.value = replyDrafts.get(key) ?? '';
     field.addEventListener('input', () => { replyDrafts.set(key, field.value); });
+    attachMentionPicker(field);
     if (pendingReplyFocus === key) {
         pendingReplyFocus = null;
         queueMicrotask(() => field.focus());
@@ -495,6 +499,93 @@ function replyComposer(post) {
         field,
         el('div', { className: 'sbtw-composer-bar' }, [send]),
     ]);
+}
+
+/**
+ * Typing @ in a composer lists the accounts this session knows (persona, invited
+ * characters, ambient strangers); arrows move, Enter or Tab inserts `@handle `, Escape closes.
+ */
+function attachMentionPicker(field) {
+    let list = null;
+    let items = [];
+    let active = 0;
+    const close = () => {
+        list?.remove();
+        list = null;
+        items = [];
+    };
+    const apply = (account) => {
+        const query = mentionQueryAt(field.value, field.selectionStart ?? field.value.length);
+        if (!query || !account) {
+            close();
+            return;
+        }
+        const next = insertMention(field.value, query.start, field.selectionStart ?? field.value.length, account.handle);
+        field.value = next.text;
+        field.setSelectionRange(next.caret, next.caret);
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        close();
+        field.focus();
+    };
+    const update = () => {
+        const query = mentionQueryAt(field.value, field.selectionStart ?? field.value.length);
+        if (!query) {
+            close();
+            return;
+        }
+        items = matchMentionAccounts(state.accounts, query.query);
+        if (!items.length) {
+            close();
+            return;
+        }
+        active = Math.min(active, items.length - 1);
+        if (!list) {
+            list = el('div', { className: 'sbtw-mentions', attrs: { role: 'listbox', 'aria-label': 'Accounts to mention' } });
+            field.insertAdjacentElement('afterend', list);
+        }
+        list.replaceChildren(...items.map((account, index) => el('button', {
+            className: `sbtw-mention-item${index === active ? ' sbtw-mention-on' : ''}`,
+            attrs: { type: 'button', role: 'option', 'aria-selected': index === active ? 'true' : 'false' },
+            on: {
+                // Keep the caret in the field, or blur closes the list before the click lands.
+                mousedown: event => event.preventDefault(),
+                click: () => apply(account),
+            },
+        }, [
+            avatarNode(account, 'sm'),
+            el('span', { className: 'sbtw-name', text: account.name }),
+            el('span', { className: 'sbtw-handle', text: `@${account.handle}` }),
+        ])));
+    };
+    field.addEventListener('input', () => { active = 0; update(); });
+    field.addEventListener('click', update);
+    field.addEventListener('keyup', (event) => {
+        if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+            update();
+        }
+    });
+    field.addEventListener('keydown', (event) => {
+        if (!list) {
+            return;
+        }
+        if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            active = (active + 1) % items.length;
+            update();
+        } else if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            active = (active - 1 + items.length) % items.length;
+            update();
+        } else if (event.key === 'Enter' || event.key === 'Tab') {
+            event.preventDefault();
+            apply(items[active]);
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+        }
+    });
+    field.addEventListener('blur', () => setTimeout(close, 150));
 }
 
 /** One action bar for both composer states, so Refresh works even without a persona. */
@@ -559,6 +650,7 @@ function composer() {
     });
     field.value = state.draft.text;
     field.addEventListener('input', () => { state.draft.text = field.value; });
+    attachMentionPicker(field);
 
     const extras = el('div', { className: 'sbtw-composer-extras' });
     if (state.draft.image) {

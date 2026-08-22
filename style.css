@@ -156,7 +156,67 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     background: var(--sbtw-surface);
     color: var(--sbtw-text);
     font-size: var(--mainFontSize, 15px);
+    /* Set here, not inherited: themes and the mobile shell hand different line-heights to
+       different elements, which read as uneven spacing inside the feed. */
+    line-height: 1.5;
     text-align: left;
+}
+
+.sbtw-shell .sbtw-body,
+.sbtw-shell .sbtw-input,
+.sbtw-shell .sbtw-poll-text,
+.sbtw-shell .sbtw-empty {
+    line-height: 1.5;
+}
+
+.sbtw-shell .sbtw-meta,
+.sbtw-shell .sbtw-name,
+.sbtw-shell .sbtw-handle,
+.sbtw-shell .sbtw-time,
+.sbtw-shell .sbtw-hint,
+.sbtw-shell .sbtw-replying,
+.sbtw-shell .sbtw-field-label {
+    line-height: 1.35;
+}
+
+.sbtw-shell .sbtw-btn,
+.sbtw-shell .sbtw-tab,
+.sbtw-shell .sbtw-nav-item,
+.sbtw-shell .sbtw-action {
+    line-height: 1.2;
+}
+
+/* @mention picker under a composer field */
+.sbtw-mentions {
+    display: flex;
+    flex-direction: column;
+    margin-top: 4px;
+    padding: 4px;
+    border: 1px solid var(--sbtw-border, var(--SmartThemeBorderColor));
+    border-radius: var(--sb-radius-sm, 10px);
+    background: var(--sbtw-surface);
+    box-shadow: 0 4px 8px color-mix(in srgb, var(--SmartThemeShadowColor, #000) 16%, transparent);
+}
+
+.sbtw-mention-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: var(--sb-radius-sm, 10px);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.sbtw-mention-item:hover,
+.sbtw-mention-item:focus-visible,
+.sbtw-mention-on {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 14%, transparent);
 }
 
 .sbtw-shell-error {
