@@ -616,6 +616,20 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     background: var(--sbtw-hover);
 }
 
+/* The tappable avatar: a bare button around the image, so it sits in the row exactly like the image did. */
+.sbtw-avatar-button {
+    flex: 0 0 auto;
+    display: inline-flex;
+    padding: 0;
+    border: 0;
+    min-height: 0;
+    height: auto;
+    background: transparent;
+    border-radius: 50%;
+    line-height: 0;
+    cursor: pointer;
+}
+
 .sbtw-avatar-xs { width: 1.25rem; height: 1.25rem; }
 .sbtw-avatar-sm { width: 2rem; height: 2rem; }
 .sbtw-avatar-md { width: 2.75rem; height: 2.75rem; }

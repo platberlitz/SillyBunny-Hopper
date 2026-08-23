@@ -422,6 +422,16 @@ function avatarNode(account, size = 'md') {
     return el('span', { className: `sbtw-avatar sbtw-avatar-${size} sbtw-avatar-initials`, text: initials });
 }
 
+/** An avatar you can tap to open that account's profile, where the name is not the only way there. */
+function avatarButton(account, size, key) {
+    const name = account?.name ?? 'Unknown';
+    return el('button', {
+        className: 'sbtw-avatar-button',
+        attrs: { type: 'button', title: `${name}'s profile`, 'aria-label': `${name}'s profile` },
+        on: { click: () => showProfile(key) },
+    }, [avatarNode(account, size)]);
+}
+
 /** Renders body text as text nodes, turning @handles that match a real account into links. */
 function bodyNode(text) {
     const fragment = document.createDocumentFragment();
@@ -522,6 +532,39 @@ function imageNode(post) {
 const replyDrafts = new Map();
 let pendingReplyFocus = null;
 
+/**
+ * iOS: the host's Safari patch (browser-fixes.js → mobile-shell-lifecycle) cancels every
+ * horizontal touch pan inside the chat chrome unless the scroller is on its hard-coded list
+ * of rails, and an extension cannot get on that list. Its handler sits on document in the
+ * capture phase; window capture runs first, so a sideways swipe that starts in the trend
+ * row is kept from reaching it. Nothing is prevented: the row still scrolls natively.
+ */
+let trendPanGuardInstalled = false;
+function installTrendPanGuard() {
+    if (trendPanGuardInstalled || typeof window === 'undefined') {
+        return;
+    }
+    trendPanGuardInstalled = true;
+    let start = null;
+    window.addEventListener('touchstart', (event) => {
+        const touch = event.touches?.[0];
+        const inRow = touch && event.target instanceof Element && event.target.closest('.sbtw-trends');
+        start = inRow && event.touches.length === 1 ? { x: touch.clientX, y: touch.clientY } : null;
+    }, { capture: true, passive: true });
+    window.addEventListener('touchmove', (event) => {
+        if (!start || event.touches?.length !== 1) {
+            return;
+        }
+        const touch = event.touches[0];
+        if (Math.abs(touch.clientX - start.x) > Math.abs(touch.clientY - start.y)) {
+            event.stopPropagation();
+        }
+    }, { capture: true, passive: true });
+    const clear = () => { start = null; };
+    window.addEventListener('touchend', clear, { capture: true, passive: true });
+    window.addEventListener('touchcancel', clear, { capture: true, passive: true });
+}
+
 function replyTargetKey(target) {
     return JSON.stringify([target.postId, target.parentInteractionId ?? null]);
 }
@@ -601,7 +644,7 @@ function engagementNode(ownerId, interactions) {
         ...(items.length ? items.map((item) => {
             const account = accountFor(item.actorKey) ?? item.actorSnapshot ?? null;
             return el('div', { className: 'sbtw-engagement-row' }, [
-                avatarNode(account, 'sm'),
+                avatarButton(account, 'sm', item.actorKey),
                 el('button', {
                     className: 'sbtw-name',
                     text: nameFor(item.actorKey, item.actorSnapshot),
@@ -628,7 +671,7 @@ function replyNode(reply) {
     return el('div', { className: 'sbtw-reply', attrs: { 'data-kind': reply.actorSnapshot?.kind ?? '', 'data-reply-id': reply.id } }, [
         // The avatar shares a row with the name block so it stays centred on it even when the time wraps.
         el('div', { className: 'sbtw-reply-head' }, [
-            avatarNode(account ?? reply.actorSnapshot ?? null, 'sm'),
+            avatarButton(account ?? reply.actorSnapshot ?? null, 'sm', reply.actorKey),
             el('div', { className: 'sbtw-meta' }, [
                 el('button', {
                     className: 'sbtw-name',
@@ -678,7 +721,7 @@ function repostedReplyNode({ post, reply, repost }) {
             el('span', { text: `${nameFor(repost.actorKey, repost.actorSnapshot)} reposted a reply${repost.content ? ' with a comment' : ''}` }),
         ]),
         repost.content ? el('div', { className: 'sbtw-post-row' }, [
-            avatarNode(actor ?? repost.actorSnapshot ?? null, 'md'),
+            avatarButton(actor ?? repost.actorSnapshot ?? null, 'md', repost.actorKey),
             el('div', { className: 'sbtw-post-main' }, [
                 el('div', { className: 'sbtw-meta' }, [
                     el('button', {
@@ -716,7 +759,7 @@ function postNode(post, repost = null, { compact = false } = {}) {
             el('span', { text: `${nameFor(repost.actorKey, repost.actorSnapshot)} reposted` }),
         ]) : null,
         el('div', { className: 'sbtw-post-row' }, [
-            avatarNode(account ?? post.authorSnapshot ?? null, compact ? 'sm' : 'md'),
+            avatarButton(account ?? post.authorSnapshot ?? null, compact ? 'sm' : 'md', post.authorKey),
             el('div', { className: 'sbtw-post-main' }, [
                 el('div', { className: 'sbtw-meta' }, [
                     el('button', {
@@ -756,7 +799,7 @@ function quoteNode(post, repost) {
             el('span', { text: `${nameFor(repost.actorKey, repost.actorSnapshot)} reposted with a comment` }),
         ]),
         el('div', { className: 'sbtw-post-row' }, [
-            avatarNode(actor ?? repost.actorSnapshot ?? null, 'md'),
+            avatarButton(actor ?? repost.actorSnapshot ?? null, 'md', repost.actorKey),
             el('div', { className: 'sbtw-post-main' }, [
                 el('div', { className: 'sbtw-meta' }, [
                     el('button', {
@@ -1076,6 +1119,7 @@ function timelineView() {
     let trendsBar = null;
     if (state.tab === 'trending') {
         const trends = state.session?.trends ?? [];
+        installTrendPanGuard();
         trendsBar = el('div', { className: 'sbtw-trends', attrs: { role: 'list', 'aria-label': 'Trending topics' } }, trends.length
             ? trends.map(trend => el('button', {
                 className: 'sbtw-trend',
@@ -1736,7 +1780,7 @@ function whoToFollow() {
     return el('aside', { className: 'sbtw-rail' }, [
         el('h4', { text: 'Who to follow' }),
         ...suggestions.map(account => el('div', { className: 'sbtw-suggestion' }, [
-            avatarNode(account, 'sm'),
+            avatarButton(account, 'sm', account.key),
             el('div', { className: 'sbtw-suggestion-meta' }, [
                 el('button', { className: 'sbtw-name', text: account.name, attrs: { type: 'button' }, on: { click: () => showProfile(account.key) } }),
                 el('span', { className: 'sbtw-handle', text: `@${account.handle}` }),
