@@ -742,6 +742,24 @@ async function generateProfilesFor(accounts, allAccounts, signal) {
     }
 }
 
+/**
+ * Writes the persona's timeline profile (name, handle, bio, location) with the same
+ * connection that writes posts, from the persona description. Returns the profile or null.
+ */
+export async function generatePersonaProfile(sessionId = ensureActiveSession().id, { signal } = {}) {
+    const accounts = await currentAccounts(sessionId);
+    const persona = accounts.find(account => account.kind === KIND_PERSONA) ?? null;
+    if (!persona) {
+        throw new Error('Set a persona for this timeline first.');
+    }
+    const profiles = await generateProfilesFor([persona], accounts, signal);
+    const profile = profiles[persona.key];
+    if (!profile) {
+        return null;
+    }
+    return { name: profile.name, handle: profile.handle, bio: profile.bio, location: profile.location };
+}
+
 export async function generatePostImage(prompt, signal) {
     const context = ctx();
     if (typeof context.executeSlashCommandsWithOptions !== 'function') {

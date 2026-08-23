@@ -66,7 +66,7 @@ All of them live inside the Hopper workspace under **Settings**. The drawer in t
 
 - **Who posts** - which characters take part, whether strangers may join in (random passers-by invented by the model, not part of the cast), and how many accounts are active per refresh.
 - **Timeline identity** - the session's name, freeform type, persona and equipped Scenario Notes. The type tells the model what sort of social setting this is; it is not a fixed list.
-- **Persona profile** - a timeline-only display name, handle, bio and location. It never rewrites the host persona.
+- **Persona profile** - a timeline-only display name, handle, bio and location. It never rewrites the host persona. **Write it with the model** asks the posts connection to draft all four from the persona description; the result is editable.
 - **Connection** - which connection profile writes the posts. A cheap model is fine here; a separate one saves the roleplay connection for roleplay. Unset, it uses the current connection.
 - **How much each refresh makes** - caps for posts, replies, reposts and likes. Defaults are 8, 12, 4 and 18.
 - **One post at a time** - instead of one request for the whole batch, each request writes a single post (by the next character in turn, or a stranger) plus the reactions to it, and the timeline fills in as each one lands. More requests, but the first post shows up in seconds; Posts above is how many turns a refresh takes, and a couple of quiet turns in a row stop it early.

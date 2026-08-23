@@ -21,6 +21,7 @@ import {
     updateSettings,
     updateSession,
     writeFeed,
+    generatePersonaProfile,
 } from '../src/api.js';
 import { SETTINGS_KEY } from '../src/core.js';
 
@@ -573,6 +574,20 @@ test('one post at a time: one request per post, each committed and shown as it l
     assert.ok(result2.warnings.some(w => /skipped/.test(w)));
     assert.ok(feed2.posts.length >= 1);
     updateSettings({ incremental: false });
+});
+
+test('generatePersonaProfile writes the persona profile from the persona description', async () => {
+    const session = ensureActiveSession();
+    const accounts = await currentAccounts(session.id);
+    const persona = accounts.find(account => account.kind === 'persona');
+    assert.ok(persona, 'the test context has a persona');
+    current.nextResponse = JSON.stringify({ profiles: [{ entityId: persona.entityId, name: 'Wren of the Harbour', handle: 'wren_harbour', bio: 'Runs the noticeboard.', location: 'Harbour end' }] });
+    const profile = await generatePersonaProfile(session.id);
+    assert.deepEqual(profile, { name: 'Wren of the Harbour', handle: 'wren_harbour', bio: 'Runs the noticeboard.', location: 'Harbour end' });
+    const sent = current.calls.filter(call => call[0] === 'generateRaw').at(-1);
+    assert.ok(String(sent?.[1]?.prompt ?? sent?.[1]?.systemPrompt ?? JSON.stringify(sent)).includes(persona.entityId), 'the persona is the profile target');
+    current.nextResponse = 'not json';
+    assert.equal(await generatePersonaProfile(session.id), null);
 });
 
 test('a refresh commits only to the session it started with', async () => {

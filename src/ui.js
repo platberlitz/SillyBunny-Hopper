@@ -1173,6 +1173,35 @@ function settingsView() {
         ]) : null,
 
         el('h3', { text: 'Persona profile' }),
+        (() => {
+            // Asks the posts connection to write name, handle, bio and location from the persona description.
+            const write = button('Write it with the model', 'sbtw-btn sbtw-btn-quiet', async () => {
+                if (write.disabled) {
+                    return;
+                }
+                write.disabled = true;
+                const label = write.querySelector('span');
+                const previous = label.textContent;
+                label.textContent = 'Writing...';
+                const { signal } = freshSignal();
+                try {
+                    const profile = await api.generatePersonaProfile(session.id, { signal });
+                    if (!profile) {
+                        toast('The model did not return a usable profile. Try again.', 'warning');
+                        return;
+                    }
+                    saveProfile(profile);
+                    toast(`Profile written: ${profile.name} @${profile.handle}`, 'success');
+                } catch (error) {
+                    console.error('[Hopper] persona profile generation failed', error);
+                    toast(error?.message || 'The profile could not be written - check your connection settings.', 'error');
+                } finally {
+                    write.disabled = false;
+                    label.textContent = previous;
+                }
+            }, { iconName: 'fa-wand-magic-sparkles', title: 'Ask the posts connection to write this profile from your persona description' });
+            return el('div', { className: 'sbtw-composer-bar' }, [write, el('span', { className: 'sbtw-hint', text: 'Uses your persona description; you can edit the result.' })]);
+        })(),
         el('div', { className: 'sbtw-row' }, [
             field('Display name', el('input', {
                 className: 'sbtw-input',
