@@ -1801,6 +1801,10 @@ function settingsView() {
         ]),
         checkbox('Let accounts make polls', settings.polls, value => save({ polls: value })),
         checkbox('One post at a time', settings.incremental, value => save({ incremental: value })),
+        settings.incremental
+            ? field('Requests at once', numberInput(settings.concurrency, 1, 6, value => save({ concurrency: value })),
+                'Several small requests in flight together, each writing one post, each shown the moment it lands. The wait is roughly one request instead of all of them; the cost is that each one carries the context again, so more at once means faster but pricier. One at a time is the old single file.')
+            : null,
         el('p', { className: 'sbtw-hint', text: 'Each request writes a single post and the reactions to it, and the timeline fills in as they land. More requests than the batch, but the first post shows up in seconds. Posts above is how many.' }),
 
         el('h3', { text: 'Pictures' }),

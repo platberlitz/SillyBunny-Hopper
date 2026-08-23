@@ -53,6 +53,8 @@ export const DEFAULTS = Object.freeze({
     quotas: { posts: 8, replies: 12, reposts: 4, likes: 18 },
     /** One post per request, committed and shown as each lands, instead of one batch. */
     incremental: false,
+    /** How many of those small requests run at once. One is the old single file. */
+    concurrency: 3,
     active: { mode: 'range', min: 2, max: 5, count: 3 },
     images: { enabled: false, perRefresh: 3, instructions: '' },
     polls: true,
@@ -290,6 +292,7 @@ export function normalizeSettings(raw) {
         },
         polls: source.polls !== false,
         incremental: source.incremental === true,
+        concurrency: clampInt(source.concurrency, 1, 6, DEFAULTS.concurrency),
         tone: typeof source.tone === 'string' ? source.tone.slice(0, 8000) : '',
         scene: { enabled: isPlainObject(source.scene) && source.scene.enabled === true },
         history: {
@@ -468,6 +471,18 @@ export function reasoningOverridesFrom(profile, preset) {
         }
     }
     return overrides;
+}
+
+/**
+ * Splits a refresh's allowance across its turns. Turns that run at once cannot watch each
+ * other spend, so each is handed its own share up front and the shares add up to the whole.
+ */
+export function shareQuota(total, turns) {
+    const count = Math.max(1, Math.trunc(turns));
+    const whole = Math.max(0, Math.trunc(total));
+    const base = Math.floor(whole / count);
+    const extra = whole % count;
+    return Array.from({ length: count }, (_, index) => base + (index < extra ? 1 : 0));
 }
 
 export function snapshotOf(account) {

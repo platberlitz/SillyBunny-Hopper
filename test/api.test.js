@@ -589,7 +589,7 @@ test('made-up trends from a refresh replace the session trends', async () => {
 });
 
 test('one post at a time: one request per post, each committed and shown as it lands', async () => {
-    updateSettings({ incremental: true, quotas: { posts: 3, replies: 6, reposts: 2, likes: 9 }, profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+    updateSettings({ incremental: true, concurrency: 1, quotas: { posts: 3, replies: 6, reposts: 2, likes: 9 }, profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
     const feed = emptyFeed();
     const seen = [];
     const turns = [];
@@ -621,6 +621,58 @@ test('one post at a time: one request per post, each committed and shown as it l
     const result2 = await runRefresh({ feed: feed2 });
     assert.ok(result2.warnings.some(w => /skipped/.test(w)));
     assert.ok(feed2.posts.length >= 1);
+    updateSettings({ incremental: false, concurrency: 3 });
+});
+
+test('several at once: the requests overlap, the caps still hold, and only the first turn opens the door', async () => {
+    updateSettings({ incremental: true, concurrency: 3, quotas: { posts: 3, replies: 6, reposts: 2, likes: 9 }, profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+    updateSession(ensureActiveSession().id, { ambient: true });
+    const feed = emptyFeed();
+    const seen = [];
+    const prompts = [];
+    let inFlight = 0;
+    let mostAtOnce = 0;
+    current.generateRaw = async ({ prompt }) => {
+        inFlight += 1;
+        mostAtOnce = Math.max(mostAtOnce, inFlight);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        const author = (/as @(\w+) only/.exec(prompt) ?? [])[1] ?? 'ada';
+        prompts.push(prompt);
+        inFlight -= 1;
+        return JSON.stringify({
+            posts: [{ tempId: 't', authorHandle: author, content: `post by ${author} #${prompts.length}` }],
+            interactions: [{ actorHandle: author === 'ada' ? 'bo' : 'ada', type: 'reply', targetTempId: 't', content: `reply ${prompts.length}` }],
+            follows: [],
+        });
+    };
+    const result = await runRefresh({ feed, onPartial: () => seen.push(feed.posts.length) });
+
+    assert.equal(prompts.length, 3, 'one request per post');
+    assert.equal(mostAtOnce, 3, 'and all three were in flight together');
+    assert.deepEqual(seen, [1, 2, 3], 'each lands on its own, in order, however they finished');
+    assert.equal(result.posts.length, 3);
+    assert.equal(feed.posts.length, 3);
+
+    // The allowance is split up front, so turns that cannot see each other still add up to the caps.
+    const replyCaps = prompts.map(prompt => Number((/replies: at most (\d+)/.exec(prompt) ?? [])[1]));
+    assert.deepEqual(replyCaps, [2, 2, 2], 'six replies across three turns');
+    assert.equal(replyCaps.reduce((sum, value) => sum + value, 0), 6);
+    const likeCaps = prompts.map(prompt => Number((/likes: at most (\d+)/.exec(prompt) ?? [])[1]));
+    assert.equal(likeCaps.reduce((sum, value) => sum + value, 0), 9);
+
+    // Strangers, a poll and the trending bar belong to the opening turn; the rest would multiply them.
+    const opener = prompts.find(prompt => /Post 1 of 3/.test(prompt));
+    const others = prompts.filter(prompt => !/Post 1 of 3/.test(prompt));
+    assert.match(opener, /You may introduce up to 2 new strangers/);
+    assert.match(opener, /polls: at most 1/);
+    assert.match(opener, /Also return 4 to 6 "trends"/);
+    for (const prompt of others) {
+        assert.match(prompt, /Not allowed this refresh: leave "strangers" empty/);
+        assert.match(prompt, /polls: at most 0/);
+        assert.match(prompt, /Leave "trends" empty/);
+    }
+
+    updateSession(ensureActiveSession().id, { ambient: false });
     updateSettings({ incremental: false });
 });
 

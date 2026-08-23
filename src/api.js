@@ -20,6 +20,7 @@ import {
     MAX_NEW_STRANGERS_PER_REFRESH,
     MAX_POLLS_PER_REFRESH,
     reasoningOverridesFrom,
+    shareQuota,
 } from './core.js';
 
 // getContext() copies chatId / characterId / chatMetadata by value, so a cached reference
@@ -998,7 +999,9 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
     };
 
     if (current.incremental) {
-        const result = await runIncrementalRefresh(batch);
+        const result = current.concurrency > 1
+            ? await runParallelRefresh(batch)
+            : await runIncrementalRefresh(batch);
         result.profilesWritten = profilesWritten;
         return result;
     }
@@ -1134,6 +1137,132 @@ async function commitBatch(result, { sessionId, feed, signal, onProgress, onPart
  * reactions to it, commits it and shows it, then moves on. More requests, but the first
  * post lands in seconds and the timeline fills in as it goes.
  */
+/**
+ * One small request: a single post by the given author, plus the reactions around it. Used by
+ * both paces - one at a time, and several at once.
+ */
+async function runOneTurn(batch, { index, total, author, turnSettings, strangersLeft, pollsLeft, trends, liveAccounts, activeKeys, remaining }) {
+    const { feed, persona, session, newId, topic, scene } = batch;
+    const messages = buildRefreshMessages({
+        accounts: liveAccounts,
+        active: liveAccounts.filter(account => activeKeys.has(account.key)),
+        persona,
+        session,
+        posts: feed.posts,
+        interactions: feed.interactions,
+        settings: turnSettings,
+        now: Date.now(),
+        localTime: new Date().toLocaleString(),
+        strangers: strangersLeft,
+        pollLimit: pollsLeft,
+        scene,
+        turn: { index, total, author, remaining },
+        trends,
+        topic,
+    });
+    const parsed = await generateBatch(messages, turnSettings.maxTokens, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
+    if (!parsed) {
+        return null;
+    }
+    return materializeRefresh(parsed, {
+        accounts: liveAccounts,
+        allowedActorKeys: [...activeKeys],
+        settings: turnSettings,
+        posts: feed.posts,
+        interactions: feed.interactions,
+        newId,
+        now: Date.now(),
+        strangerLimit: strangersLeft,
+        pollLimit: pollsLeft,
+    });
+}
+
+/**
+ * Several small requests in flight at once, each writing one post, each shown the moment it
+ * lands. Wall-clock is roughly one request rather than all of them, at the cost of sending the
+ * context once per request. Turns in the same wave cannot see each other, so each is given its
+ * own author and its own slice of the allowance, and only the first may bring in strangers,
+ * a poll or the trending bar.
+ */
+async function runParallelRefresh(batch) {
+    const { sessionId, feed, signal, onProgress, accounts, active, session, settings, activeKeys, topic } = batch;
+    const quotas = settings.quotas;
+    const total = Math.max(1, quotas.posts);
+    const width = Math.min(Math.max(1, settings.concurrency), total);
+    const cast = active.filter(account => account.kind === KIND_CHARACTER);
+    const shares = {
+        replies: shareQuota(quotas.replies, total),
+        reposts: shareQuota(quotas.reposts, total),
+        likes: shareQuota(quotas.likes, total),
+    };
+    const all = { posts: [], interactions: [], follows: [], strangers: [], trends: [], warnings: [] };
+    let done = 0;
+    let commits = Promise.resolve();
+
+    for (let start = 1; start <= total; start += width) {
+        signal?.throwIfAborted();
+        const wave = [];
+        for (let index = start; index < start + width && index <= total; index += 1) {
+            wave.push(index);
+        }
+        onProgress(wave.length > 1
+            ? `Writing posts ${wave[0]}-${wave.at(-1)} of ${total} at once...`
+            : `Post ${wave[0]} of ${total}...`);
+
+        const results = await Promise.all(wave.map(async (index) => {
+            const remaining = { replies: shares.replies[index - 1], reposts: shares.reposts[index - 1], likes: shares.likes[index - 1] };
+            const turnSettings = { ...settings, quotas: { posts: 1, ...remaining } };
+            try {
+                const result = await runOneTurn(batch, {
+                    index,
+                    total,
+                    author: cast.length ? cast[(index - 1) % cast.length] : null,
+                    turnSettings,
+                    // Only the opening turn may introduce anyone or set the bar; the rest would multiply them.
+                    strangersLeft: index === 1 && session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
+                    pollsLeft: index === 1 ? MAX_POLLS_PER_REFRESH : 0,
+                    trends: index === 1 && !topic,
+                    liveAccounts: accounts,
+                    activeKeys,
+                    remaining,
+                });
+                return { index, result };
+            } catch (error) {
+                if (signal?.aborted) {
+                    throw error;
+                }
+                console.warn(`[Hopper] post ${index} of ${total} failed`, error);
+                return { index, result: null, error };
+            }
+        }));
+
+        for (const { index, result } of results.sort((a, b) => a.index - b.index)) {
+            if (!result) {
+                all.warnings.push(`turn ${index}: nothing usable came back, skipped`);
+                continue;
+            }
+            // Committing writes the whole feed, so the turns take their turn here even though
+            // they were written at the same time.
+            commits = commits.then(() => commitBatch(result, batch));
+            await commits;
+            for (const key of ['posts', 'interactions', 'follows', 'strangers', 'trends', 'warnings']) {
+                all[key].push(...result[key]);
+            }
+            done += result.posts.length;
+        }
+        if (!done && start + width > total) {
+            break;
+        }
+    }
+
+    if (all.strangers.length) {
+        // Anyone new joins the cast for the next refresh.
+        await currentAccounts(sessionId);
+    }
+    updateSession(sessionId, { lastRefreshAt: Date.now() });
+    return all;
+}
+
 async function runIncrementalRefresh(batch) {
     const { sessionId, feed, signal, onProgress, accounts, active, persona, session, settings, activeKeys, newId, topic, scene } = batch;
     const quotas = settings.quotas;
