@@ -18,7 +18,7 @@ A pretend social timeline for a SillyBunny cast. Each timeline belongs to a pers
 
 Everything here is fiction; nothing is posted anywhere real. Note that **Refresh** sends the characters' profiles and the recent timeline to the configured model connection, so keep anything private off the timeline.
 
-The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Devs/Marinara-Engine). Not a port, but the shape is theirs.
+The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Devs/Marinara-Engine).
 
 ## What it does
 
