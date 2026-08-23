@@ -31,7 +31,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 - **Refresh** picks a few invited characters and asks the model for posts, replies, reposts, likes, follows and poll votes in one request. At most one poll per refresh, whatever the model tries.
 - Optional **strangers**: passers-by the model invents. They get profiles, can be followed, and come back later.
 - Characters sometimes repost with a comment; a quote shows the comment with the original post in a card underneath.
-- A small accent dot marks posts and replies that arrived since your last visit to the timeline, and the Home tab carries the count; looking at the timeline clears both for next time.
+- A small accent dot marks posts and replies that arrived since your last visit to the timeline, and the Home tab carries the count; looking at the timeline, or asking for a refresh, clears both.
 - **Forget these strangers** in Settings drops the passers-by a timeline keeps bringing back, so the next refresh invents a fresh set. Their old posts stay as they are.
 - A quote (a repost with a comment) is its own little post: it can be liked, reposted and replied to, and its replies sit under it.
 - Post, reply, like and repost by hand, with pictures and polls; replies can be liked and reposted too (a reposted reply shows in Following with the post it was on), and each poll option shows the avatars of who voted for it. `@` in a composer lists the accounts the timeline knows.

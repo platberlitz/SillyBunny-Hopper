@@ -336,12 +336,19 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     height: 1.5em;
     padding: 0 0.35em;
     border-radius: 999px;
-    background: var(--sbtw-accent);
-    color: var(--sbtw-surface);
     font-size: 0.7em;
     font-weight: 700;
     line-height: 1;
     white-space: nowrap;
+    /* Older engines stop here: the theme's own pair. */
+    background: var(--sbtw-accent);
+    color: var(--sbtw-surface);
+    /* The theme picks the accent, and its "surface" is often translucent (SmartThemeBlurTintColor
+       is a blur tint), which left the digits see-through over the icon behind them. Paint an
+       opaque chip and take black or white from that chip's own lightness, so a count reads on
+       any theme instead of inheriting whatever the theme happens to pair. */
+    background: oklch(from var(--sbtw-accent) l c h / 1);
+    color: oklch(from var(--sbtw-accent) clamp(0, (0.62 - l) * 1000, 1) 0 0 / 1);
 }
 
 .sbtw-nav-icon {
@@ -354,7 +361,9 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     position: absolute;
     top: -0.6em;
     left: 60%;
+    /* The ring separates the chip from the icon underneath, so it has to be opaque too. */
     box-shadow: 0 0 0 2px var(--sbtw-nav-surface);
+    box-shadow: 0 0 0 2px oklch(from var(--sbtw-nav-surface) l c h / 1);
 }
 
 .sbtw-tab .sbtw-badge {
@@ -1055,6 +1064,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     height: 0.45em;
     border-radius: 50%;
     background: var(--sbtw-accent);
+    background: oklch(from var(--sbtw-accent) l c h / 1);
 }
 
 @media (prefers-contrast: more) {

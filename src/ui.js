@@ -2402,6 +2402,8 @@ async function refresh({ topic = '' } = {}) {
         return;
     }
     state.busy = true;
+    // Whatever is on screen has been seen by the time you ask for more: the badge counts what this refresh brings.
+    markTimelineVisit();
     state.status = topic ? `Writing posts about ${topic}...` : 'Thinking...';
     const sessionId = state.session.id;
     const { epoch, signal } = freshSignal();
