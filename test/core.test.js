@@ -34,6 +34,8 @@ import {
     engagementScore,
     normalizeTrends,
     formatCount,
+    buildNotifications,
+    countUnseen,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -119,8 +121,65 @@ test('v1 settings migrate wholesale into one legacy timeline session', () => {
         personaProfile: { name: '', handle: '', bio: '', location: '' },
         follows: { 'persona:me.png': ['character:ada.png'] },
         lastRefreshAt: 123,
-        feedPath: '/user/files/twitterlike-feed.json', trends: [],
+        feedPath: '/user/files/twitterlike-feed.json', trends: [], notificationsSeenAt: 0,
     });
+});
+
+test('buildNotifications groups likes, replies and posts for the persona, newest first', () => {
+    const posts = [
+        { id: 'p1', authorKey: 'persona:me.png', body: 'mine', createdAt: 10 },
+        { id: 'p2', authorKey: 'character:ada.png', body: 'hey @Me look', createdAt: 20 },
+        { id: 'p3', authorKey: 'character:bo.png', body: 'plain', createdAt: 30 },
+        { id: 'p4', authorKey: 'character:bo.png', body: 'email@me.com is not a mention', createdAt: 31 },
+    ];
+    const interactions = [
+        { id: 'i1', postId: 'p1', type: 'like', actorKey: 'character:ada.png', content: null, parentInteractionId: null, createdAt: 11 },
+        { id: 'i2', postId: 'p1', type: 'reply', actorKey: 'character:bo.png', content: 'no', parentInteractionId: null, createdAt: 12 },
+        { id: 'i3', postId: 'p3', type: 'reply', actorKey: 'persona:me.png', content: 'mine on bo', parentInteractionId: null, createdAt: 32 },
+        { id: 'i4', postId: 'p3', type: 'reply', actorKey: 'character:bo.png', content: 'answer', parentInteractionId: 'i3', createdAt: 33 },
+        { id: 'i5', postId: 'p1', type: 'repost', actorKey: 'character:bo.png', content: 'quote', parentInteractionId: null, createdAt: 40 },
+        { id: 'i6', postId: 'p3', type: 'like', actorKey: 'character:ada.png', content: null, parentInteractionId: null, createdAt: 41 },
+    ];
+    const groups = buildNotifications({ posts, interactions, personaKey: 'persona:me.png', personaHandle: 'me', following: ['character:bo.png'] });
+    assert.deepEqual(groups.likes.map(i => `${i.kind}:${i.interactionId}`), ['repost:i5', 'like:i1']);
+    assert.deepEqual(groups.replies.map(i => `${i.kind}:${i.interactionId}`), ['comment-reply:i4', 'reply:i2']);
+    assert.deepEqual(groups.posts.map(i => `${i.kind}:${i.postId}`), ['post:p4', 'post:p3', 'mention:p2']);
+    assert.equal(countUnseen(groups, 0), 7);
+    assert.equal(countUnseen(groups, 30), 3, 'i4, i5 and p4 arrived after 30');
+    assert.deepEqual(buildNotifications({ posts, interactions, personaKey: '' }), { likes: [], replies: [], posts: [] });
+});
+
+test('a topic refresh asks for posts about the topic and no trends', () => {
+    const accounts = makeAccounts();
+    const active = accounts.filter(a => a.kind !== KIND_PERSONA);
+    const message = buildContextMessage({ accounts, active, persona: null, settings: settings(), now: NOW, topic: '#TideWatch' });
+    assert.match(message, /# Topic\nThis refresh is about #TideWatch\./);
+    assert.match(message, /Leave "trends" empty/);
+    assert.doesNotMatch(buildContextMessage({ accounts, active, persona: null, settings: settings(), now: NOW }), /# Topic/);
+    const messages = buildRefreshMessages({ accounts, active, persona: null, session: null, posts: [], interactions: [], settings: settings(), now: NOW, localTime: '', topic: 'harbour market' });
+    assert.ok(messages[1].content.includes('# Topic\nThis refresh is about harbour market.'));
+});
+
+test('a repost may carry a comment; a repeated comment is dropped but the repost kept', () => {
+    const accounts = makeAccounts();
+    let n = 0;
+    const newId = () => `id${++n}`;
+    const parsed = parseRefreshResponse(JSON.stringify({
+        posts: [
+            { tempId: 'a', authorHandle: '@ada', content: 'First.', poll: null, imagePrompt: null },
+            { tempId: 'b', authorHandle: '@ada', content: 'Second.', poll: null, imagePrompt: null },
+        ],
+        interactions: [
+            { actorHandle: '@bo', targetTempId: 'a', targetPostId: null, parentInteractionId: null, type: 'repost', content: 'Counterpoint: no.', pollOptionIndex: null },
+            { actorHandle: '@bo', targetTempId: 'b', targetPostId: null, parentInteractionId: null, type: 'repost', content: 'Counterpoint: no.', pollOptionIndex: null },
+            { actorHandle: '@bo', targetTempId: 'a', targetPostId: null, parentInteractionId: null, type: 'like', content: 'not allowed here', pollOptionIndex: null },
+        ],
+        follows: [],
+    }));
+    const result = materializeRefresh(parsed, { accounts, settings: settings(), newId, now: 5 });
+    assert.deepEqual(result.interactions.map(i => `${i.type}:${i.content}`), ['repost:Counterpoint: no.', 'repost:null', 'like:null']);
+    const timeline = formatTimeline(result.posts, result.interactions, accounts, { now: 5 });
+    assert.match(timeline, /reposted with a comment: Counterpoint: no\./);
 });
 
 test('malformed timeline sessions normalize to safe bounded values', () => {

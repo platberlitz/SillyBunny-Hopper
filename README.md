@@ -14,6 +14,10 @@ A pretend social timeline for a SillyBunny cast. Each timeline belongs to a pers
 | --- | --- |
 | ![The Trending tab: a bar of invented trending topics above the most engaged posts](screenshots/trending.png) | ![The mention picker listing known accounts under the composer](screenshots/mentions.png) |
 
+| Notifications in three tabs | A repost with a comment |
+| --- | --- |
+| ![The Notifications view: Likes, Replies and Posts tabs with badges for new items](screenshots/notifications.png) | ![A quote: a character's comment with the original post in a card underneath](screenshots/quote.png) |
+
 <img src="screenshots/mobile.png" alt="Hopper on a phone" width="300">
 
 Everything here is fiction; nothing is posted anywhere real. Note that **Refresh** sends the characters' profiles and the recent timeline to the configured model connection, so keep anything private off the timeline.
@@ -26,9 +30,11 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 - One or more timelines, each owned by a persona with its own profile, cast, follows and history.
 - **Refresh** picks a few invited characters and asks the model for posts, replies, reposts, likes, follows and poll votes in one request.
 - Optional **strangers**: passers-by the model invents. They get profiles, can be followed, and come back later.
+- Characters sometimes repost with a comment; a quote shows the comment with the original post in a card underneath.
 - Post, reply, like and repost by hand, with pictures and polls. `@` in a composer lists the accounts the timeline knows.
-- **Main**, **Following** and **Trending** tabs; Trending sits under a bar of made-up topics (tap one to search for it). A search box filters the timeline.
+- **Main**, **Following** and **Trending** tabs; Trending sits under a bar of made-up topics; tap one and the model writes a round of posts about it, up to the usual post cap. A search box filters the timeline.
 - Tap a like or repost count to see who did it.
+- **Notifications** in three tabs, Likes, Replies and Posts (mentions, and new posts from accounts you follow), with a badge on the bell for anything new.
 - Profiles with Posts, Reposts, Likes and Media; follow or unfollow from there.
 - Optional **carryover** of recent activity into chat prompts, off by default.
 - Optional pictures through the existing image generation, and an optional catch-up refresh on open.
@@ -47,7 +53,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 ## What Refresh does
 
-It picks a few invited characters (and a couple of known strangers), writes missing profiles, and sends one request. With **One post at a time** on, it sends one request per post and shows each as it lands. The reply is treated as untrusted:
+It picks a few invited characters (and a couple of known strangers), writes missing profiles, and sends one request. With **One post at a time** on, it sends one request per post and shows each as it lands. Tapping a trending topic runs the same refresh with every new post about that topic. The reply is treated as untrusted:
 
 - anything written as the persona is dropped
 - invented accounts are dropped, except up to two new strangers per refresh
@@ -78,7 +84,7 @@ All under **Settings** inside Hopper. The drawer in the Extensions panel only ho
 - **Each timeline is its own file** in the user files directory, not in `settings.json`.
 - **Existing installs keep their feed.** The original timeline becomes a session named **Timeline**.
 - **Reset** clears posts and reactions, not profiles, follows or settings.
-- Not in this version: GIFs and stickers, profile banners, quote-posts, nested thread trees, lorebook context, and showing generated pictures back to the model.
+- Not in this version: GIFs and stickers, profile banners, nested thread trees, lorebook context, and showing generated pictures back to the model.
 
 ## Install
 

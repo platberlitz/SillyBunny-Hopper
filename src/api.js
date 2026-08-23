@@ -786,7 +786,7 @@ export async function generatePostImage(prompt, signal) {
  * re-check every quota locally before storing anything. The model is never trusted to have
  * obeyed the prompt.
  */
-export async function runRefresh({ sessionId = ensureActiveSession().id, feed, signal, onProgress = () => {}, onPartial = () => {} } = {}) {
+export async function runRefresh({ sessionId = ensureActiveSession().id, feed, signal, onProgress = () => {}, onPartial = () => {}, topic = '' } = {}) {
     const settings = getSettings();
     const session = settings.sessions[sessionId];
     if (!session) {
@@ -826,14 +826,14 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
     const batch = {
         sessionId, feed, signal, onProgress, onPartial,
         accounts: freshAccounts, active: freshActive, persona: freshPersona, session, settings: current,
-        activeKeys, newId,
+        activeKeys, newId, topic,
     };
 
     if (current.incremental) {
         return runIncrementalRefresh(batch);
     }
 
-    onProgress('Writing posts...');
+    onProgress(topic ? `Writing posts about ${topic}...` : 'Writing posts...');
     const messages = buildRefreshMessages({
         accounts: freshAccounts,
         active: freshActive,
@@ -845,7 +845,9 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         now: Date.now(),
         localTime: new Date().toLocaleString(),
         strangers: session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
-        trends: true,
+        // A topic refresh keeps the trending bar as it is; a plain one writes a fresh set.
+        trends: !topic,
+        topic,
     });
     const parsed = await generateBatch(messages, REFRESH_MAX_TOKENS, batch, { throwOnFailure: true });
     const result = materializeRefresh(parsed, {
@@ -954,7 +956,7 @@ async function commitBatch(result, { sessionId, feed, signal, onProgress, onPart
  * post lands in seconds and the timeline fills in as it goes.
  */
 async function runIncrementalRefresh(batch) {
-    const { sessionId, feed, signal, onProgress, accounts, active, persona, session, settings, activeKeys, newId } = batch;
+    const { sessionId, feed, signal, onProgress, accounts, active, persona, session, settings, activeKeys, newId, topic } = batch;
     const quotas = settings.quotas;
     const total = Math.max(1, quotas.posts);
     const remaining = { replies: quotas.replies, reposts: quotas.reposts, likes: quotas.likes };
@@ -984,8 +986,9 @@ async function runIncrementalRefresh(batch) {
             localTime: new Date().toLocaleString(),
             strangers: strangersLeft,
             turn: { index, total, author, remaining },
-            // One set of made-up trends per refresh is plenty; the first turn writes them.
-            trends: index === 1,
+            // One set of made-up trends per refresh is plenty; the first turn writes them, and a topic refresh keeps the bar.
+            trends: index === 1 && !topic,
+            topic,
         });
         const parsed = await generateBatch(messages, TURN_MAX_TOKENS, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
         if (!parsed) {

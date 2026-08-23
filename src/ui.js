@@ -18,6 +18,8 @@ import {
     RECENT_WINDOW_HOURS,
     engagementScore,
     formatCount,
+    buildNotifications,
+    countUnseen,
 } from './core.js';
 import * as api from './api.js';
 
@@ -35,6 +37,9 @@ const state = {
     accounts: [],
     view: 'timeline',
     tab: 'main',
+    /** Which notifications tab is open, and the seen-mark from before the view was opened (rows newer than it show as new). */
+    notifTab: 'likes',
+    notifSeenBefore: 0,
     /** `${postId}:like` or `${postId}:repost` while a who-did-this list is open. */
     engagementFor: null,
     profileKey: null,
@@ -244,6 +249,16 @@ function visibleTimelineEntries(query = state.timelineSearch) {
         || post.authorKey === me?.key
         || following.has(post.authorKey)
         || repost);
+
+    // A repost with a comment is a quote: it gets its own entry in Main, as on the real thing.
+    if (state.tab === 'main') {
+        const byId = new Map(state.feed.posts.map(post => [post.id, post]));
+        for (const item of state.feed.interactions) {
+            if (item.type === 'repost' && item.content && byId.has(item.postId)) {
+                entries.push({ post: byId.get(item.postId), repost: item, sortAt: item.createdAt });
+            }
+        }
+    }
 
     // Trending: the most talked-about posts of the last two days, most engaged first.
     if (state.tab === 'trending') {
@@ -504,21 +519,25 @@ function replyNode(reply) {
     ]);
 }
 
-function postNode(post, repost = null) {
+/** A post card. `compact` is the embedded form inside a quote: no actions, replies or delete, and no scroll anchor. */
+function postNode(post, repost = null, { compact = false } = {}) {
+    if (repost?.content && !compact) {
+        return quoteNode(post, repost);
+    }
     const account = accountFor(post.authorKey);
     const me = personaAccount();
-    const mine = me && post.authorKey === me.key;
-    const replies = interactionsFor(post.id)
+    const mine = me && post.authorKey === me.key && !compact;
+    const replies = compact ? [] : interactionsFor(post.id)
         .filter(item => item.type === 'reply')
         .sort((a, b) => a.createdAt - b.createdAt);
 
-    return el('article', { className: 'sbtw-post', attrs: { 'data-post-id': post.id } }, [
+    return el('article', { className: `sbtw-post${compact ? ' sbtw-post-compact' : ''}`, attrs: compact ? {} : { 'data-post-id': post.id } }, [
         repost ? el('div', { className: 'sbtw-repost-context' }, [
             icon('fa-retweet'),
             el('span', { text: `${nameFor(repost.actorKey, repost.actorSnapshot)} reposted` }),
         ]) : null,
         el('div', { className: 'sbtw-post-row' }, [
-            avatarNode(account ?? post.authorSnapshot ?? null, 'md'),
+            avatarNode(account ?? post.authorSnapshot ?? null, compact ? 'sm' : 'md'),
             el('div', { className: 'sbtw-post-main' }, [
                 el('div', { className: 'sbtw-meta' }, [
                     el('button', {
@@ -540,10 +559,38 @@ function postNode(post, repost = null) {
                 el('div', { className: 'sbtw-body' }, [bodyNode(post.body)]),
                 pollNode(post),
                 imageNode(post),
-                actionsNode(post),
-                engagementNode(post),
-                state.replyingTo?.postId === post.id ? replyComposer(post) : null,
+                compact ? null : actionsNode(post),
+                compact ? null : engagementNode(post),
+                !compact && state.replyingTo?.postId === post.id ? replyComposer(post) : null,
                 replies.length ? el('div', { className: 'sbtw-replies' }, replies.map(replyNode)) : null,
+            ]),
+        ]),
+    ]);
+}
+
+/** A repost with a comment: the reposter speaks, and the original sits in a card underneath. */
+function quoteNode(post, repost) {
+    const actor = accountFor(repost.actorKey);
+    return el('article', { className: 'sbtw-post sbtw-quote', attrs: { 'data-repost-id': repost.id } }, [
+        el('div', { className: 'sbtw-repost-context' }, [
+            icon('fa-retweet'),
+            el('span', { text: `${nameFor(repost.actorKey, repost.actorSnapshot)} reposted with a comment` }),
+        ]),
+        el('div', { className: 'sbtw-post-row' }, [
+            avatarNode(actor ?? repost.actorSnapshot ?? null, 'md'),
+            el('div', { className: 'sbtw-post-main' }, [
+                el('div', { className: 'sbtw-meta' }, [
+                    el('button', {
+                        className: 'sbtw-name',
+                        text: nameFor(repost.actorKey, repost.actorSnapshot),
+                        attrs: { type: 'button' },
+                        on: { click: () => showProfile(repost.actorKey) },
+                    }),
+                    el('span', { className: 'sbtw-handle', text: `@${handleFor(repost.actorKey, repost.actorSnapshot)}` }),
+                    el('span', { className: 'sbtw-time', text: dateFormat.format(new Date(repost.createdAt)) }),
+                ]),
+                el('div', { className: 'sbtw-body' }, [bodyNode(repost.content)]),
+                el('div', { className: 'sbtw-quote-card' }, [postNode(post, null, { compact: true })]),
             ]),
         ]),
     ]);
@@ -848,8 +895,9 @@ function timelineView() {
         trendsBar = el('div', { className: 'sbtw-trends', attrs: { role: 'list', 'aria-label': 'Trending topics' } }, trends.length
             ? trends.map(trend => el('button', {
                 className: 'sbtw-trend',
-                attrs: { type: 'button', role: 'listitem', title: `Search for ${trend.topic}` },
-                on: { click: () => { search.value = trend.topic; state.timelineSearch = trend.topic; drawResults(); } },
+                attrs: { type: 'button', role: 'listitem', title: `Write a round of posts about ${trend.topic}`, disabled: state.busy ? 'disabled' : null },
+                // A tap runs a refresh about the topic (same post cap as Refresh) and shows the matches in Main as they land.
+                on: { click: () => { if (state.busy) { return; } state.tab = 'main'; state.timelineSearch = trend.topic; void refresh({ topic: trend.topic }); } },
             }, [
                 el('span', { className: 'sbtw-trend-topic', text: trend.topic }),
                 el('span', { className: 'sbtw-trend-count', text: `${formatCount(trend.posts)} posts` }),
@@ -929,36 +977,82 @@ function section(title, nodes, emptyText) {
     ]);
 }
 
-function notificationsView() {
+function notificationGroups() {
     const me = personaAccount();
-    if (!me) {
+    if (!me || !state.feed) {
+        return null;
+    }
+    return buildNotifications({
+        posts: state.feed.posts,
+        interactions: state.feed.interactions,
+        personaKey: me.key,
+        personaHandle: me.handle,
+        following: state.session?.follows?.[me.key] ?? [],
+    });
+}
+
+function unseenNotifications() {
+    const groups = notificationGroups();
+    return groups ? countUnseen(groups, state.session?.notificationsSeenAt ?? 0) : 0;
+}
+
+function badgeNode(count) {
+    return el('span', { className: 'sbtw-badge', text: count > 99 ? '99+' : String(count), attrs: { 'aria-hidden': 'true' } });
+}
+
+const NOTIFICATION_TABS = [['likes', 'Likes'], ['replies', 'Replies'], ['posts', 'Posts']];
+const NOTIFICATION_VERB = {
+    like: 'liked your post',
+    repost: 'reposted you',
+    vote: 'voted in your poll',
+    reply: 'replied to you',
+    'comment-reply': 'replied to your comment',
+    mention: 'mentioned you',
+    post: 'posted',
+};
+const NOTIFICATION_EMPTY = {
+    likes: 'No likes, reposts or poll votes on your posts yet.',
+    replies: 'No replies yet. Post something and run a refresh.',
+    posts: 'No mentions yet, and nothing new from the accounts you follow.',
+};
+
+function notificationsView() {
+    const groups = notificationGroups();
+    if (!groups) {
         return el('div', { className: 'sbtw-empty', text: 'Set a persona to get notifications.' });
     }
-    const myPostIds = new Set(state.feed.posts.filter(post => post.authorKey === me.key).map(post => post.id));
-    // Replies to MY comments on other people's posts are notifications too.
-    const myReplyIds = new Set(
-        state.feed.interactions
-            .filter(item => item.type === 'reply' && item.actorKey === me.key)
-            .map(item => item.id),
-    );
-    const rows = state.feed.interactions
-        .filter(item => item.actorKey !== me.key
-            && (myPostIds.has(item.postId) || (item.parentInteractionId && myReplyIds.has(item.parentInteractionId))))
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, 50);
+    // Looking at the view clears the badge; rows newer than the previous visit stay marked until you leave.
+    const latest = Math.max(0, ...Object.values(groups).flat().map(item => item.createdAt));
+    if (latest > (state.session.notificationsSeenAt ?? 0)) {
+        state.session = api.updateSession(state.session.id, { notificationsSeenAt: latest });
+    }
+    const isNew = item => item.createdAt > state.notifSeenBefore;
 
-    const verb = { like: 'liked your post', repost: 'reposted you', reply: 'replied to you', vote: 'voted in your poll' };
+    const tabs = el('div', { className: 'sbtw-tabs' }, NOTIFICATION_TABS.map(([value, label]) => {
+        const fresh = groups[value].filter(isNew).length;
+        return el('button', {
+            className: `sbtw-tab${state.notifTab === value ? ' sbtw-tab-on' : ''}`,
+            attrs: {
+                type: 'button',
+                'aria-pressed': String(state.notifTab === value),
+                'aria-label': `${label}, ${groups[value].length} total${fresh ? `, ${fresh} new` : ''}`,
+            },
+            on: { click: () => { state.notifTab = value; render(); } },
+        }, [el('span', { text: `${label} ${groups[value].length}` }), fresh ? badgeNode(fresh) : null]);
+    }));
+
+    const rows = (groups[state.notifTab] ?? groups.likes).slice(0, 50);
     const list = rows.map(item => el('button', {
-        className: 'sbtw-notification',
+        className: `sbtw-notification${isNew(item) ? ' sbtw-notification-new' : ''}`,
         attrs: { type: 'button' },
         on: {
             click: () => {
                 state.view = 'timeline';
                 state.tab = 'main';
                 state.timelineSearch = '';
-                // Only a reply gives you something to answer; likes just take you to the post.
-                if (item.type === 'reply') {
-                    setReplyTarget(item.postId, item.id, { toggle: false });
+                // Only a reply gives you something to answer; everything else just takes you to the post.
+                if (item.kind === 'reply' || item.kind === 'comment-reply') {
+                    setReplyTarget(item.postId, item.interactionId, { toggle: false });
                 } else {
                     state.replyingTo = null;
                     pendingReplyFocus = null;
@@ -969,23 +1063,21 @@ function notificationsView() {
         },
     }, [
         avatarNode(accountFor(item.actorKey) ?? item.actorSnapshot ?? null, 'sm'),
-        el('div', {}, [
+        el('div', { className: 'sbtw-notification-main' }, [
             el('div', { className: 'sbtw-meta' }, [
                 el('span', { className: 'sbtw-name', text: nameFor(item.actorKey, item.actorSnapshot) }),
                 el('span', { className: 'sbtw-time', text: dateFormat.format(new Date(item.createdAt)) }),
             ]),
-            el('div', {
-                className: 'sbtw-body',
-                text: `${item.parentInteractionId && !myPostIds.has(item.postId)
-                    ? 'replied to your comment'
-                    : verb[item.type] ?? 'reacted'}${item.content ? `: ${item.content}` : ''}`,
-            }),
+            el('div', { className: 'sbtw-body', text: `${NOTIFICATION_VERB[item.kind] ?? 'reacted'}${item.content ? `: ${item.content}` : ''}` }),
         ]),
     ]));
 
-    return list.length
-        ? el('div', { className: 'sbtw-list' }, list)
-        : el('div', { className: 'sbtw-empty', text: 'Nothing yet. Post something and run a refresh.' });
+    return el('div', {}, [
+        tabs,
+        list.length
+            ? el('div', { className: 'sbtw-list' }, list)
+            : el('div', { className: 'sbtw-empty', text: NOTIFICATION_EMPTY[state.notifTab] ?? NOTIFICATION_EMPTY.likes }),
+    ]);
 }
 
 // --- settings view --------------------------------------------------------
@@ -1309,13 +1401,27 @@ function settingsView() {
 
 // --- shell ----------------------------------------------------------------
 
-function navButton(label, iconName, view) {
+function navButton(label, iconName, view, { badge = 0 } = {}) {
     return el('button', {
         className: `sbtw-nav-item${state.view === view ? ' sbtw-nav-on' : ''}`,
         // Mobile hides the label span, so the name must live on the button too.
-        attrs: { type: 'button', 'aria-label': label, 'aria-current': state.view === view ? 'page' : null },
-        on: { click: () => { state.view = view; if (view !== 'profile') { state.profileKey = null; } render(); } },
-    }, [icon(iconName), el('span', { text: label })]);
+        attrs: { type: 'button', 'aria-label': badge ? `${label}, ${badge} new` : label, 'aria-current': state.view === view ? 'page' : null },
+        on: {
+            click: () => {
+                state.view = view;
+                if (view !== 'profile') {
+                    state.profileKey = null;
+                }
+                if (view === 'notifications') {
+                    state.notifSeenBefore = state.session?.notificationsSeenAt ?? 0;
+                }
+                render();
+            },
+        },
+    }, [
+        el('span', { className: 'sbtw-nav-icon' }, [icon(iconName), badge ? badgeNode(badge) : null]),
+        el('span', { className: 'sbtw-nav-label', text: label }),
+    ]);
 }
 
 function whoToFollow() {
@@ -1474,7 +1580,7 @@ function render() {
             on: { click: () => { state.view = 'timeline'; state.profileKey = null; render(); const main = state.body?.querySelector('.sbtw-main'); if (main) { main.scrollTop = 0; } } },
         }, [bunnyIcon()]),
         navButton('Home', 'fa-house', 'timeline'),
-        navButton('Notifications', 'fa-bell', 'notifications'),
+        navButton('Notifications', 'fa-bell', 'notifications', { badge: unseenNotifications() }),
         el('button', {
             className: `sbtw-nav-item${state.view === 'profile' ? ' sbtw-nav-on' : ''}`,
             attrs: {
@@ -1485,7 +1591,7 @@ function render() {
                 title: me ? 'Profile' : 'Set a persona first',
             },
             on: { click: () => showProfile(me?.key ?? null) },
-        }, [icon('fa-user'), el('span', { text: 'Profile' })]),
+        }, [el('span', { className: 'sbtw-nav-icon' }, [icon('fa-user')]), el('span', { className: 'sbtw-nav-label', text: 'Profile' })]),
         navButton('Settings', 'fa-gear', 'settings'),
     ]);
     // A rail that does not exist must not be appended - DOM APIs would stringify the null.
@@ -1745,12 +1851,12 @@ async function openImage(url) {
  * run aborts it through its signal, and every await is followed by a staleness check so
  * stale work can never render, toast, or clear a live run's state.
  */
-async function refresh() {
+async function refresh({ topic = '' } = {}) {
     if (state.busy) {
         return;
     }
     state.busy = true;
-    state.status = 'Thinking...';
+    state.status = topic ? `Writing posts about ${topic}...` : 'Thinking...';
     const sessionId = state.session.id;
     const { epoch, signal } = freshSignal();
     let runs = ++refreshRuns;
@@ -1760,6 +1866,7 @@ async function refresh() {
             sessionId,
             feed: state.feed,
             signal,
+            topic,
             onProgress: (message) => {
                 if (!isLive(epoch)) {
                     return;

@@ -590,6 +590,15 @@ test('generatePersonaProfile writes the persona profile from the persona descrip
     assert.equal(await generatePersonaProfile(session.id), null);
 });
 
+test('a topic refresh sends the topic and leaves the trending bar alone', async () => {
+    current.nextResponse = GOOD_BATCH;
+    await runRefresh({ feed: emptyFeed(), topic: '#TideWatch' });
+    const sent = JSON.stringify(current.calls.filter(call => call[0] === 'generateRaw').at(-1)[1]);
+    assert.match(sent, /# Topic/);
+    assert.match(sent, /#TideWatch/);
+    assert.match(sent, /Leave \\"trends\\" empty/);
+});
+
 test('a refresh commits only to the session it started with', async () => {
     const first = ensureActiveSession();
     const second = createSession({ personaId: 'me.png', invited: ['bo.png'] });

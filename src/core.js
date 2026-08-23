@@ -147,6 +147,7 @@ export function normalizeSession(raw, id = '') {
         lastRefreshAt: clampInt(source.lastRefreshAt, 0, Number.MAX_SAFE_INTEGER, 0),
         feedPath: typeof source.feedPath === 'string' ? source.feedPath : '',
         trends: normalizeTrends(source.trends),
+        notificationsSeenAt: clampInt(source.notificationsSeenAt, 0, Number.MAX_SAFE_INTEGER, 0),
     };
 }
 
@@ -498,6 +499,7 @@ export function buildSystemPrompt(settings) {
         '- For each interaction set either targetTempId or targetPostId, and set the other to null.',
         '- To answer an existing comment, create a reply for its post and set parentInteractionId to that comment\'s exact replyId. Otherwise set parentInteractionId to null.',
         '- pollOptionIndex is a zero-based integer for votes and null for everything else.',
+        '- A repost may carry a short comment in content, like a quote post. Make some reposts do that and leave the rest plain with content null.',
         '- Never make an account interact twice with the same post, and never let an account reply to its own comment.',
         '- Never reuse the same text for two posts or replies. Do not copy a post\'s text into a reply.',
         '- An exact @handle in text tags that account. Preserve @handles exactly.',
@@ -550,7 +552,7 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
             counts[interaction.type] += 1;
             countsByPost.set(interaction.postId, counts);
         }
-        if (interaction.type === 'reply') {
+        if (interaction.type === 'reply' || (interaction.type === 'repost' && interaction.content)) {
             const list = repliesByPost.get(interaction.postId) ?? [];
             list.push(interaction);
             repliesByPost.set(interaction.postId, list);
@@ -571,7 +573,9 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
             .sort((a, b) => a.createdAt - b.createdAt)
             .slice(-MAX_REPLIES_PER_POST);
         for (const reply of replies) {
-            lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)}: ${inertText(reply.content)}`);
+            lines.push(reply.type === 'repost'
+                ? `  ${label(reply.actorKey, reply.actorSnapshot)} reposted with a comment: ${inertText(reply.content)}`
+                : `  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)}: ${inertText(reply.content)}`);
         }
         return lines.join('\n');
     };
@@ -625,7 +629,7 @@ export function matchesTimelineQuery(post, interactions, query) {
     return values.some(value => searchableText(value).includes(needle));
 }
 
-export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '', strangers = 0, trends = false } = {}) {
+export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '', strangers = 0, trends = false, topic = '' } = {}) {
     const activeKeys = new Set(active.map(account => account.key));
     const roster = accounts
         .map((account) => {
@@ -685,6 +689,14 @@ export function buildContextMessage({ accounts, active, persona, session = null,
         sections.push('# Strangers', 'Not allowed this refresh: leave "strangers" empty and use only the accounts above.', '');
     }
 
+    if (topic) {
+        sections.push(
+            '# Topic',
+            `This refresh is about ${inertText(topic)}. Every new post must be about it and include it verbatim (the hashtag or phrase) so it can be found; reactions may still land on older posts.`,
+            '',
+        );
+    }
+
     sections.push(
         '# Trending Topics',
         trends
@@ -729,7 +741,7 @@ const OUTPUT_SHAPE = {
         targetPostId: 'existing postId, when targeting a post from the timeline above',
         parentInteractionId: 'existing replyId when answering a comment directly, otherwise null',
         type: 'like | repost | reply | vote',
-        content: 'required for reply, null otherwise',
+        content: 'required for reply; an optional short comment for repost (a quote); null otherwise',
         pollOptionIndex: 1,
     }],
     follows: [{
@@ -765,10 +777,10 @@ export function buildTurnInstruction({ index = 1, total = 1, author = null, rema
     ].join('\n');
 }
 
-export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0, turn = null, trends = false }) {
+export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0, turn = null, trends = false, topic = '' }) {
     return [
         { role: 'system', content: buildSystemPrompt(settings) },
-        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers, trends }) },
+        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers, trends, topic }) },
         ...(turn ? [{ role: 'user', content: buildTurnInstruction(turn) }] : []),
         { role: 'user', content: buildFormatMessage() },
     ];
@@ -1139,6 +1151,14 @@ export function materializeRefresh(parsed, {
                     parentInteractionId = parent;
                 }
             }
+        } else if (type === 'repost') {
+            // A quote: the comment is optional, and a comment this account already used is dropped while the repost stays.
+            const comment = String(draft?.content ?? '').trim().slice(0, REPLY_MAX_CHARS);
+            const textKey = `${actor.key}|${normalizeText(comment)}`;
+            if (comment && !seenText.has(textKey)) {
+                seenText.add(textKey);
+                content = comment;
+            }
         } else if (type === 'vote') {
             const poll = pollByPostId.get(postId);
             const index = draft?.pollOptionIndex;
@@ -1218,7 +1238,7 @@ export function digestLines(posts, interactions, accounts, { since = 0, limit = 
         if (item.type === 'reply') {
             rows.push({ at: item.createdAt, text: `${actor} replied to ${targetName}: ${safe(item.content)}` });
         } else if (item.type === 'repost') {
-            rows.push({ at: item.createdAt, text: `${actor} reposted ${targetName}.` });
+            rows.push({ at: item.createdAt, text: `${actor} reposted ${targetName}${item.content ? `: ${safe(item.content)}` : '.'}` });
         } else if (item.type === 'like') {
             rows.push({ at: item.createdAt, text: `${actor} liked a post by ${targetName}.` });
         }
@@ -1298,6 +1318,56 @@ export function insertMention(text, start, caret, handle) {
 }
 
 // --- trending ---------------------------------------------------------------
+
+/**
+ * The persona's notifications in three groups: likes (likes, reposts and poll votes on their
+ * posts), replies (to their posts, or to their comments elsewhere) and posts (posts that mention
+ * them, or by accounts they follow). Newest first in each group.
+ */
+export function buildNotifications({ posts = [], interactions = [], personaKey = '', personaHandle = '', following = [] } = {}) {
+    const groups = { likes: [], replies: [], posts: [] };
+    if (!personaKey) {
+        return groups;
+    }
+    const row = item => ({ id: item.id, postId: item.postId, interactionId: item.id, actorKey: item.actorKey, actorSnapshot: item.actorSnapshot ?? null, content: item.content ?? '', createdAt: item.createdAt });
+    const myPostIds = new Set(posts.filter(post => post.authorKey === personaKey).map(post => post.id));
+    const myReplyIds = new Set(interactions.filter(item => item.type === 'reply' && item.actorKey === personaKey).map(item => item.id));
+    for (const item of interactions) {
+        if (item.actorKey === personaKey) {
+            continue;
+        }
+        const onMine = myPostIds.has(item.postId);
+        const toMyComment = Boolean(item.parentInteractionId) && myReplyIds.has(item.parentInteractionId);
+        if (item.type === 'reply') {
+            if (onMine || toMyComment) {
+                groups.replies.push({ kind: toMyComment && !onMine ? 'comment-reply' : 'reply', ...row(item) });
+            }
+        } else if (onMine) {
+            groups.likes.push({ kind: item.type, ...row(item) });
+        }
+    }
+    const follows = new Set(following);
+    const handle = String(personaHandle).toLowerCase().replace(/[^a-z0-9_]/g, '');
+    const mention = handle ? new RegExp(`(^|[^a-z0-9_])@${handle}(?![a-z0-9_])`, 'i') : null;
+    for (const post of posts) {
+        if (post.authorKey === personaKey) {
+            continue;
+        }
+        const mentioned = mention ? mention.test(String(post.body ?? '')) : false;
+        if (mentioned || follows.has(post.authorKey)) {
+            groups.posts.push({ kind: mentioned ? 'mention' : 'post', id: post.id, postId: post.id, interactionId: null, actorKey: post.authorKey, actorSnapshot: post.authorSnapshot ?? null, content: post.body ?? '', createdAt: post.createdAt });
+        }
+    }
+    for (const list of Object.values(groups)) {
+        list.sort((a, b) => b.createdAt - a.createdAt);
+    }
+    return groups;
+}
+
+/** How many notifications arrived after the persona last looked. */
+export function countUnseen(groups, seenAt = 0) {
+    return Object.values(groups ?? {}).reduce((total, list) => total + list.filter(item => item.createdAt > seenAt).length, 0);
+}
 
 /** Replies and reposts weigh twice a like; a poll vote counts like a like. */
 export function engagementScore({ like = 0, reply = 0, repost = 0, vote = 0 } = {}) {
