@@ -1022,6 +1022,13 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     margin: 0.3rem 0;
 }
 
+/* The pin is its own element, so it needs the space a space would have given it. */
+.sbtw-location {
+    display: flex;
+    align-items: center;
+    gap: 0.35em;
+}
+
 .sbtw-section > summary {
     padding: 0.6rem 0;
     cursor: pointer;
