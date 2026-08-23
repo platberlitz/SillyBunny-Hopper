@@ -154,6 +154,7 @@ export function normalizeSession(raw, id = '') {
         feedPath: typeof source.feedPath === 'string' ? source.feedPath : '',
         trends: normalizeTrends(source.trends),
         notificationsSeenAt: clampInt(source.notificationsSeenAt, 0, Number.MAX_SAFE_INTEGER, 0),
+        timelineSeenAt: clampInt(source.timelineSeenAt, 0, Number.MAX_SAFE_INTEGER, 0),
     };
 }
 
@@ -415,6 +416,11 @@ export function deriveAccounts({ characters = [], invited = [], persona = null, 
     return accounts;
 }
 
+/** A comment others can answer, like or repost: a reply, or a repost that carries a comment (a quote). */
+export function isAnswerable(item) {
+    return item?.type === 'reply' || (item?.type === 'repost' && Boolean(item?.content));
+}
+
 export function snapshotOf(account) {
     return {
         key: account.key,
@@ -601,7 +607,7 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
         for (const reply of replies) {
             if (reply.type === 'repost') {
                 const what = reply.parentInteractionId ? `reposted replyId=${reply.parentInteractionId} with a comment` : 'reposted with a comment';
-                lines.push(`  ${label(reply.actorKey, reply.actorSnapshot)} ${what}: ${inertText(reply.content)}`);
+                lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)} ${what}: ${inertText(reply.content)}`);
                 continue;
             }
             const counts = countsByReply.get(reply.id);
@@ -719,7 +725,9 @@ export function buildContextMessage({ accounts, active, persona, session = null,
     if (strangers > 0) {
         sections.push(
             '# Strangers',
-            `Passers-by who are not part of the cast may join in. You may introduce up to ${strangers} new strangers this refresh: list each under "strangers" with a name, a handle (lowercase letters, digits and underscores, no @) and a one-line bio, then write as them using that @handle. Strangers mostly reply, like and vote; at most one stranger starts a post. Give them ordinary, varied names and voices; never reuse a handle from Active Accounts, and never let one speak as the persona or as a character. Leave "strangers" empty when nobody new would plausibly show up.`,
+            `Passers-by who are not part of the cast may join in. You may introduce up to ${strangers} new strangers this refresh: list each under "strangers" with a name, a handle (lowercase letters, digits and underscores, no @) and a one-line bio, then write as them using that @handle. Strangers mostly reply, like and vote; at most one stranger starts a post.`,
+            'Make each one a specific person, not a placeholder: give them a job, a hobby, a local role, an obsession or a running complaint, and let that show in what they say and in the handle they picked for themselves. Vary their age, class, mood and how they type. A stranger who could be swapped for any other stranger is a wasted one, so avoid the filler shapes: a first name plus a surname as the handle, a bio that only says they are passing by, and a voice that agrees pleasantly with everyone.',
+            `Never reuse a handle from Active Accounts, and never let one speak as the persona or as a character. Leave "strangers" empty when nobody new would plausibly show up.`,
             '',
         );
     } else {
@@ -1178,7 +1186,7 @@ export function materializeRefresh(parsed, {
     }
     let strangerPosts = 0;
     const existingPostIds = new Set(existingPosts.map(post => post.id));
-    const existingReplyIds = new Set(existingInteractions.filter(item => item.type === 'reply').map(item => item.id));
+    const existingReplyIds = new Set(existingInteractions.filter(isAnswerable).map(item => item.id));
     const pollByPostId = new Map(existingPosts.filter(post => post.poll).map(post => [post.id, post.poll]));
 
     const seenPairs = new Set(existingInteractions.map(item => `${item.postId}|${item.actorKey}|${item.type}|${item.parentInteractionId ?? ''}`));
@@ -1534,7 +1542,7 @@ export function buildNotifications({ posts = [], interactions = [], personaKey =
     }
     const row = item => ({ id: item.id, postId: item.postId, interactionId: item.id, actorKey: item.actorKey, actorSnapshot: item.actorSnapshot ?? null, content: item.content ?? '', createdAt: item.createdAt });
     const myPostIds = new Set(posts.filter(post => post.authorKey === personaKey).map(post => post.id));
-    const myReplyIds = new Set(interactions.filter(item => item.type === 'reply' && item.actorKey === personaKey).map(item => item.id));
+    const myReplyIds = new Set(interactions.filter(item => isAnswerable(item) && item.actorKey === personaKey).map(item => item.id));
     for (const item of interactions) {
         if (item.actorKey === personaKey) {
             continue;

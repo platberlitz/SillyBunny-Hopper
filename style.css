@@ -1046,6 +1046,24 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     background: color-mix(in srgb, var(--sbtw-accent) 8%, transparent);
 }
 
+/* The same "new since your last visit" mark on a post or reply: one small accent dot in the name row. */
+.sbtw-new-dot {
+    flex: 0 0 auto;
+    align-self: center;
+    margin-right: 0.15em;
+    width: 0.45em;
+    height: 0.45em;
+    border-radius: 50%;
+    background: var(--sbtw-accent);
+}
+
+@media (prefers-contrast: more) {
+    .sbtw-new-dot {
+        outline: 1px solid var(--sbtw-text);
+        outline-offset: 1px;
+    }
+}
+
 .sbtw-rail {
     padding-left: var(--sbtw-gap);
     border-left: 1px solid var(--sbtw-divider);

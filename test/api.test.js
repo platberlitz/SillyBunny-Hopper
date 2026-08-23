@@ -25,6 +25,7 @@ import {
     deleteSession,
     regenerateAllProfiles,
     generatePostImage,
+    clearStrangers,
 } from '../src/api.js';
 import { SETTINGS_KEY } from '../src/core.js';
 
@@ -639,6 +640,18 @@ test('regenerateAllProfiles rewrites every invited character in one request, rul
     for (const handle of ['@me', '@ada', '@bo']) {
         assert.ok(taken.includes(handle), `${handle} is ruled out`);
     }
+});
+
+test('clearing the strangers forgets them without touching what they already posted', () => {
+    const session = ensureActiveSession();
+    updateSession(session.id, { strangers: [
+        { id: 'stranger-pip', name: 'Pip', handle: 'pip_pip', bio: 'Just here for the polls.', createdAt: 1 },
+        { id: 'stranger-jo', name: 'Ferry Jo', handle: 'ferry_jo', bio: 'Commutes by boat.', createdAt: 2 },
+    ] });
+    assert.equal(clearStrangers(session.id), 2);
+    assert.deepEqual(getSession(session.id).strangers, []);
+    assert.equal(clearStrangers(session.id), 0, 'clearing again is a no-op');
+    assert.throws(() => clearStrangers('nope'), /no longer exists/);
 });
 
 test('generatePersonaProfile writes the persona profile from the persona description', async () => {

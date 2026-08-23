@@ -844,6 +844,22 @@ function imageCommandFor(context, quoted) {
     return quiet ? `/qig quiet=true mode=direct ${quoted}` : `/imagine quiet=true gallery=false ${quoted}`;
 }
 
+/**
+ * Forgets a timeline's passers-by, so the next refresh invents new ones. Their old posts keep
+ * the name and avatar they were written under; only the cast that keeps coming back is dropped.
+ */
+export function clearStrangers(sessionId = ensureActiveSession().id) {
+    const session = getSession(sessionId);
+    if (!session) {
+        throw new Error('That timeline session no longer exists.');
+    }
+    const cleared = session.strangers.length;
+    if (cleared) {
+        updateSession(sessionId, { strangers: [] });
+    }
+    return cleared;
+}
+
 export async function generatePostImage(prompt, signal) {
     const context = ctx();
     if (typeof context.executeSlashCommandsWithOptions !== 'function') {

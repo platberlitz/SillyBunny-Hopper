@@ -24,6 +24,7 @@ import {
     discountRepeatAuthors,
     mentionsHandle,
     summarizeRefresh,
+    isAnswerable,
 } from './core.js';
 import * as api from './api.js';
 
@@ -44,6 +45,8 @@ const state = {
     /** Which notifications tab is open, and the seen-mark from before the view was opened (rows newer than it show as new). */
     notifTab: 'likes',
     notifSeenBefore: 0,
+    /** The timeline's seen-mark from before this visit: posts and replies newer than it wear a dot. */
+    timelineSeenBefore: 0,
     /** `${postId}:like` or `${postId}:repost` while a who-did-this list is open. */
     engagementFor: null,
     profileKey: null,
@@ -187,7 +190,7 @@ function handleFor(key, snapshot) {
 // One pass over the interactions per render, instead of a full scan inside every
 // comparator and every post node. Rebuilt at the top of render().
 const EMPTY_STATS = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0, onReply: new Map() };
-const EMPTY_REPLY_STATS = { items: [], like: 0, repost: 0, mine: new Map() };
+const EMPTY_REPLY_STATS = { items: [], like: 0, repost: 0, reply: 0, mine: new Map() };
 let byPost = new Map();
 
 /** A like or repost whose parent is a comment sits on that comment, not on the post. */
@@ -195,19 +198,28 @@ function onComment(item) {
     return (item.type === 'like' || item.type === 'repost') && Boolean(item.parentInteractionId);
 }
 
+/**
+ * A quote (a repost carrying a comment) gets its own entry in the timeline, so replies to it
+ * belong there rather than in the original post's flat reply list.
+ */
+function onQuote(item, quoteIds) {
+    return item.type === 'reply' && Boolean(item.parentInteractionId) && quoteIds.has(item.parentInteractionId);
+}
+
 function buildInteractionMap() {
     const map = new Map();
     const me = personaAccount();
+    const quoteIds = new Set(state.feed.interactions.filter(item => item.type === 'repost' && item.content).map(item => item.id));
     for (const item of state.feed.interactions) {
         let entry = map.get(item.postId);
         if (!entry) {
             entry = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0, onReply: new Map() };
             map.set(item.postId, entry);
         }
-        if (onComment(item)) {
+        if (onComment(item) || onQuote(item, quoteIds)) {
             let bucket = entry.onReply.get(item.parentInteractionId);
             if (!bucket) {
-                bucket = { items: [], like: 0, repost: 0, mine: new Map() };
+                bucket = { items: [], like: 0, repost: 0, reply: 0, mine: new Map() };
                 entry.onReply.set(item.parentInteractionId, bucket);
             }
             bucket.items.push(item);
@@ -249,6 +261,14 @@ function myInteraction(postId, type) {
 
 function replyStatsFor(postId, replyId) {
     return statsFor(postId).onReply.get(replyId) ?? EMPTY_REPLY_STATS;
+}
+
+/** The comment with this id on this post: a reply, or a quote of it. Quote replies live in the quote's own bucket. */
+function answerableOn(postId, id) {
+    const stats = statsFor(postId);
+    return stats.items.find(item => isAnswerable(item) && item.id === id)
+        ?? [...stats.onReply.values()].flatMap(bucket => bucket.items).find(item => isAnswerable(item) && item.id === id)
+        ?? null;
 }
 
 /** Only replies bump a conversation; likes and votes must not reorder the timeline. */
@@ -430,6 +450,21 @@ function avatarButton(account, size, key) {
         attrs: { type: 'button', title: `${name}'s profile`, 'aria-label': `${name}'s profile` },
         on: { click: () => showProfile(key) },
     }, [avatarNode(account, size)]);
+}
+
+/** Entering the timeline freezes its seen-mark, so what arrived since the last visit stays marked while it is read. */
+function markTimelineVisit() {
+    state.timelineSeenBefore = state.session?.timelineSeenAt ?? 0;
+}
+
+/** Arrived since the last visit, and not written by you. */
+function isNewToMe(item, authorKey) {
+    const me = personaAccount();
+    return item.createdAt > state.timelineSeenBefore && authorKey !== me?.key;
+}
+
+function newDot() {
+    return el('span', { className: 'sbtw-new-dot', attrs: { role: 'img', title: 'New since your last visit', 'aria-label': 'New since your last visit' } });
 }
 
 /** Renders body text as text nodes, turning @handles that match a real account into links. */
@@ -668,11 +703,13 @@ function replyNode(reply) {
     const stats = replyStatsFor(reply.postId, reply.id);
     const liked = Boolean(stats.mine.get('like'));
     const reposted = Boolean(stats.mine.get('repost'));
-    return el('div', { className: 'sbtw-reply', attrs: { 'data-kind': reply.actorSnapshot?.kind ?? '', 'data-reply-id': reply.id } }, [
+    const fresh = isNewToMe(reply, reply.actorKey);
+    return el('div', { className: `sbtw-reply${fresh ? ' sbtw-reply-new' : ''}`, attrs: { 'data-kind': reply.actorSnapshot?.kind ?? '', 'data-reply-id': reply.id } }, [
         // The avatar shares a row with the name block so it stays centred on it even when the time wraps.
         el('div', { className: 'sbtw-reply-head' }, [
             avatarButton(account ?? reply.actorSnapshot ?? null, 'sm', reply.actorKey),
             el('div', { className: 'sbtw-meta' }, [
+                fresh ? newDot() : null,
                 el('button', {
                     className: 'sbtw-name',
                     text: nameFor(reply.actorKey, reply.actorSnapshot),
@@ -753,7 +790,8 @@ function postNode(post, repost = null, { compact = false } = {}) {
         .filter(item => item.type === 'reply')
         .sort((a, b) => a.createdAt - b.createdAt);
 
-    return el('article', { className: `sbtw-post${compact ? ' sbtw-post-compact' : ''}`, attrs: compact ? {} : { 'data-post-id': post.id } }, [
+    const fresh = !compact && isNewToMe(post, post.authorKey);
+    return el('article', { className: `sbtw-post${compact ? ' sbtw-post-compact' : ''}${fresh ? ' sbtw-post-new' : ''}`, attrs: compact ? {} : { 'data-post-id': post.id } }, [
         repost ? el('div', { className: 'sbtw-repost-context' }, [
             icon('fa-retweet'),
             el('span', { text: `${nameFor(repost.actorKey, repost.actorSnapshot)} reposted` }),
@@ -762,6 +800,8 @@ function postNode(post, repost = null, { compact = false } = {}) {
             avatarButton(account ?? post.authorSnapshot ?? null, compact ? 'sm' : 'md', post.authorKey),
             el('div', { className: 'sbtw-post-main' }, [
                 el('div', { className: 'sbtw-meta' }, [
+                    // The dot leads the row: the name block wraps on a phone, and a trailing dot ends up stranded on a line of its own.
+                    fresh ? newDot() : null,
                     el('button', {
                         className: 'sbtw-name',
                         text: nameFor(post.authorKey, post.authorSnapshot),
@@ -783,7 +823,9 @@ function postNode(post, repost = null, { compact = false } = {}) {
                 imageNode(post),
                 compact ? null : actionsNode(post),
                 compact ? null : engagementNode(post.id, interactionsFor(post.id)),
-                !compact && state.replyingTo?.postId === post.id ? replyComposer(post) : null,
+                !compact && state.replyingTo?.postId === post.id && !statsFor(post.id).onReply.has(state.replyingTo?.parentInteractionId)
+                    ? replyComposer(post)
+                    : null,
                 replies.length ? el('div', { className: 'sbtw-replies' }, replies.map(replyNode)) : null,
             ]),
         ]),
@@ -793,6 +835,12 @@ function postNode(post, repost = null, { compact = false } = {}) {
 /** A repost with a comment: the reposter speaks, and the original sits in a card underneath. */
 function quoteNode(post, repost) {
     const actor = accountFor(repost.actorKey);
+    const me = personaAccount();
+    const stats = replyStatsFor(post.id, repost.id);
+    const liked = Boolean(stats.mine.get('like'));
+    const reposted = Boolean(stats.mine.get('repost'));
+    const targeted = isReplyTarget(post.id, repost.id);
+    const replies = stats.items.filter(item => item.type === 'reply').sort((a, b) => a.createdAt - b.createdAt);
     return el('article', { className: 'sbtw-post sbtw-quote', attrs: { 'data-repost-id': repost.id } }, [
         el('div', { className: 'sbtw-repost-context' }, [
             icon('fa-retweet'),
@@ -813,6 +861,15 @@ function quoteNode(post, repost) {
                 ]),
                 el('div', { className: 'sbtw-body' }, [bodyNode(repost.content)]),
                 el('div', { className: 'sbtw-quote-card' }, [postNode(post, null, { compact: true })]),
+                // A quote is its own little post: it can be liked, reposted and answered like one.
+                el('div', { className: 'sbtw-actions' }, [
+                    actionButton(repost.id, me, 'fa-heart', stats.like, liked, () => toggle(post.id, 'like', repost), liked ? 'Unlike' : 'Like', 'like'),
+                    actionButton(repost.id, me, 'fa-retweet', stats.repost, reposted, () => toggle(post.id, 'repost', repost), reposted ? 'Undo repost' : 'Repost', 'repost'),
+                    actionButton(repost.id, me, 'fa-comment', stats.reply, targeted, () => setReplyTarget(post.id, repost.id), 'Reply'),
+                ]),
+                engagementNode(repost.id, stats.items),
+                targeted ? replyComposer(post) : null,
+                replies.length ? el('div', { className: 'sbtw-replies' }, replies.map(replyNode)) : null,
             ]),
         ]),
     ]);
@@ -821,9 +878,7 @@ function quoteNode(post, repost) {
 function replyComposer(post) {
     const me = personaAccount();
     const target = state.replyingTo ?? { postId: post.id, parentInteractionId: null };
-    const parent = target.parentInteractionId
-        ? interactionsFor(post.id).find(item => item.type === 'reply' && item.id === target.parentInteractionId)
-        : null;
+    const parent = target.parentInteractionId ? answerableOn(post.id, target.parentInteractionId) : null;
     const key = replyTargetKey(target);
     const parentHandle = parent ? handleFor(parent.actorKey, parent.actorSnapshot) : '';
     const field = el('textarea', {
@@ -1050,6 +1105,15 @@ function composer() {
 }
 
 function timelineView() {
+    // Looking at the timeline clears the dots for next time; this visit keeps the ones it opened with.
+    const latest = Math.max(
+        0,
+        ...state.feed.posts.map(post => post.createdAt),
+        ...state.feed.interactions.filter(item => item.type === 'reply').map(item => item.createdAt),
+    );
+    if (state.session && latest > (state.session.timelineSeenAt ?? 0)) {
+        state.session = api.updateSession(state.session.id, { timelineSeenAt: latest });
+    }
     // Plain toggle buttons: a real tab pattern needs arrow-key roving focus and
     // tabpanels we do not have, and mislabelled tabs are worse than honest buttons.
     const tabs = el('div', { className: 'sbtw-tabs' }, [
@@ -1206,6 +1270,28 @@ function profileView() {
     ]);
 }
 
+/** Drops the passers-by this timeline keeps bringing back, so the next refresh invents new ones. */
+function forgetStrangers() {
+    if (state.busy || !state.session) {
+        return;
+    }
+    const sessionId = state.session.id;
+    try {
+        const cleared = api.clearStrangers(sessionId);
+        state.session = api.getSession(sessionId);
+        void refreshAccounts(sessionId).then(() => render()).catch((error) => {
+            console.error('[Hopper] the account list could not be refreshed', error);
+        });
+        render();
+        toast(cleared
+            ? `${cleared === 1 ? 'One stranger' : `${cleared} strangers`} forgotten. The next refresh brings new ones.`
+            : 'No strangers to forget yet.', cleared ? 'success' : 'info');
+    } catch (error) {
+        console.error('[Hopper] strangers could not be cleared', error);
+        toast(error?.message || 'The strangers could not be cleared.', 'error');
+    }
+}
+
 /** Fresh handles, names and bios for every invited character in one request. */
 async function rewriteAllProfiles() {
     if (state.busy || !state.session) {
@@ -1299,6 +1385,16 @@ function notificationGroups() {
     });
 }
 
+/** Posts and replies wearing a new-dot right now: the same mark, counted for the Home badge. */
+function unseenTimeline() {
+    if (!state.feed) {
+        return 0;
+    }
+    const posts = state.feed.posts.filter(post => isNewToMe(post, post.authorKey)).length;
+    const replies = state.feed.interactions.filter(item => item.type === 'reply' && isNewToMe(item, item.actorKey)).length;
+    return posts + replies;
+}
+
 function unseenNotifications() {
     const groups = notificationGroups();
     return groups ? countUnseen(groups, state.session?.notificationsSeenAt ?? 0) : 0;
@@ -1359,6 +1455,7 @@ function notificationsView() {
             click: () => {
                 state.view = 'timeline';
                 state.tab = 'main';
+                markTimelineVisit();
                 state.timelineSearch = '';
                 // Only a reply gives you something to answer; everything else just takes you to the post.
                 if (item.kind === 'reply' || item.kind === 'comment-reply') {
@@ -1667,6 +1764,13 @@ function settingsView() {
         ]), 'One request rewrites the handle, name and bio of every invited character; the current handles are ruled out. One character at a time: New profile on their page.'),
         checkbox('Let strangers join in', session.ambient, value => saveSession({ ambient: value })),
         el('p', { className: 'sbtw-hint', text: `Random passers-by the model invents, not part of the cast. They mostly reply and like, get a profile, and come back later.${session.strangers.length ? ` ${session.strangers.length} so far.` : ''}` }),
+        el('div', { className: 'sbtw-button-row' }, [
+            button('Forget these strangers', 'sbtw-btn sbtw-btn-quiet', () => forgetStrangers(), {
+                iconName: 'fa-arrows-rotate',
+                title: 'Drop the passers-by this timeline keeps bringing back; the next refresh invents new ones',
+            }),
+        ]),
+        el('p', { className: 'sbtw-hint', text: 'Their old posts stay as they are. The next refresh introduces a fresh set.' }),
         field('Accounts per refresh', activeMode),
         settings.active.mode === 'range'
             ? el('div', { className: 'sbtw-row' }, [
@@ -1755,6 +1859,9 @@ function navButton(label, iconName, view, { badge = 0 } = {}) {
                 }
                 if (view === 'notifications') {
                     state.notifSeenBefore = state.session?.notificationsSeenAt ?? 0;
+                }
+                if (view === 'timeline') {
+                    markTimelineVisit();
                 }
                 render();
             },
@@ -1967,9 +2074,9 @@ function render() {
         el('button', {
             className: 'sbtw-logo',
             attrs: { type: 'button', 'aria-label': 'Hopper', title: 'Hopper - back to the top of the timeline' },
-            on: { click: () => { state.view = 'timeline'; state.profileKey = null; render(); const main = state.body?.querySelector('.sbtw-main'); if (main) { main.scrollTop = 0; } } },
+            on: { click: () => { state.view = 'timeline'; state.profileKey = null; markTimelineVisit(); render(); const main = state.body?.querySelector('.sbtw-main'); if (main) { main.scrollTop = 0; } } },
         }, [bunnyIcon()]),
-        navButton('Home', 'fa-house', 'timeline'),
+        navButton('Home', 'fa-house', 'timeline', { badge: unseenTimeline() }),
         navButton('Notifications', 'fa-bell', 'notifications', { badge: unseenNotifications() }),
         el('button', {
             className: `sbtw-nav-item${state.view === 'profile' ? ' sbtw-nav-on' : ''}`,
@@ -2116,9 +2223,7 @@ function addReply(post, text, parentInteractionId = null) {
     if (!me) {
         return;
     }
-    const parent = parentInteractionId
-        ? interactionsFor(post.id).find(item => item.type === 'reply' && item.id === parentInteractionId)
-        : null;
+    const parent = parentInteractionId ? answerableOn(post.id, parentInteractionId) : null;
     if (parentInteractionId && !parent) {
         toast('That reply is no longer available.', 'warning');
         state.replyingTo = null;
@@ -2579,6 +2684,7 @@ async function startFeed() {
     state.accounts = accounts;
     state.view = 'timeline';
     state.tab = 'main';
+    markTimelineVisit();
     state.profileKey = null;
     state.replyingTo = null;
     state.timelineSearch = '';

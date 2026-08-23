@@ -126,7 +126,7 @@ test('v1 settings migrate wholesale into one legacy timeline session', () => {
         personaProfile: { name: '', handle: '', bio: '', location: '' },
         follows: { 'persona:me.png': ['character:ada.png'] },
         lastRefreshAt: 123,
-        feedPath: '/user/files/twitterlike-feed.json', trends: [], notificationsSeenAt: 0,
+        feedPath: '/user/files/twitterlike-feed.json', trends: [], notificationsSeenAt: 0, timelineSeenAt: 0,
     });
 });
 
@@ -316,6 +316,54 @@ test('at most one poll survives a refresh, however many the model writes', () =>
     // A rolling refresh spends its one poll on the first turn and asks for none afterwards.
     assert.match(buildContextMessage({ accounts, active: accounts, persona: null, settings: settings(), now: NOW, pollLimit: 0 }), /polls: at most 0 in this whole refresh/);
     assert.equal(materializeRefresh(parsed, { accounts, settings: settings(), newId, now: NOW, pollLimit: 0 }).posts.filter(post => post.poll).length, 0);
+});
+
+test('the strangers section asks for specific people, not placeholders', () => {
+    const accounts = makeAccounts();
+    const message = buildContextMessage({ accounts, active: accounts, persona: null, settings: settings(), now: NOW, strangers: 2 });
+    assert.match(message, /Make each one a specific person, not a placeholder/);
+    assert.match(message, /avoid the filler shapes/);
+    assert.doesNotMatch(message, /ordinary, varied names/);
+    assert.match(message, /up to 2 new strangers/);
+});
+
+test('a quote can be answered, liked and reposted like any other comment', () => {
+    const accounts = makeAccounts();
+    const existingPosts = [{ id: 'p1', authorKey: 'character:ada.png', body: 'hello', createdAt: NOW }];
+    const existingInteractions = [
+        { id: 'q1', postId: 'p1', type: 'repost', actorKey: 'character:bo.png', content: 'Saving this.', parentInteractionId: null, createdAt: NOW },
+        { id: 'x1', postId: 'p1', type: 'repost', actorKey: 'character:ada.png', content: null, parentInteractionId: null, createdAt: NOW },
+    ];
+    const parsed = { posts: [], interactions: [
+        { actorHandle: '@ada', targetPostId: 'p1', type: 'reply', content: 'Of course you are.', parentInteractionId: 'q1' },
+        { actorHandle: '@ada', targetPostId: 'p1', type: 'like', parentInteractionId: 'q1' },
+        { actorHandle: '@bo', targetPostId: 'p1', type: 'reply', content: 'Not this one.', parentInteractionId: 'x1' },
+    ], follows: [] };
+    const result = materializeRefresh(parsed, { accounts, posts: existingPosts, interactions: existingInteractions, settings: settings(), newId, now: NOW + 1 });
+    assert.deepEqual(
+        result.interactions.map(i => `${i.type}:${i.parentInteractionId}`),
+        ['reply:q1', 'like:q1', 'reply:null'],
+        'a quote is answerable; a plain repost is not',
+    );
+});
+
+test('the timeline gives a quote an id the model can answer', () => {
+    const accounts = makeAccounts();
+    const posts = [{ id: 'p1', authorKey: 'character:ada.png', body: 'hello', createdAt: NOW - 1000 }];
+    const interactions = [
+        { id: 'q1', postId: 'p1', type: 'repost', actorKey: 'character:bo.png', content: 'Saving this.', parentInteractionId: null, createdAt: NOW - 900 },
+    ];
+    assert.match(formatTimeline(posts, interactions, accounts, { now: NOW }), /replyId=q1 @bo reposted with a comment: Saving this\./);
+});
+
+test('a reply to my quote reaches my notifications', () => {
+    const posts = [{ id: 'p1', authorKey: 'character:ada.png', body: 'theirs', createdAt: 10 }];
+    const interactions = [
+        { id: 'q1', postId: 'p1', type: 'repost', actorKey: 'persona:me.png', content: 'mine', parentInteractionId: null, createdAt: 11 },
+        { id: 'r1', postId: 'p1', type: 'reply', actorKey: 'character:bo.png', content: 'answering your quote', parentInteractionId: 'q1', createdAt: 12 },
+    ];
+    const groups = buildNotifications({ posts, interactions, personaKey: 'persona:me.png', personaHandle: 'me' });
+    assert.deepEqual(groups.replies.map(i => `${i.kind}:${i.interactionId}`), ['comment-reply:r1']);
 });
 
 test('a topic refresh asks for posts about the topic and no trends', () => {
