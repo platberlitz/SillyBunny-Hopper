@@ -31,6 +31,7 @@ export const DEFAULT_TONE = [
     '- Before writing for an account, ground yourself in its stated traits and make sentence length, punctuation, capitalisation and emoji use follow from them: a withdrawn character sounds withdrawn, a hostile one sounds hostile, an extrovert sounds enthusiastic. Make every voice unmistakable.',
     '- Make characters rude to each other whenever their personalities and history call for it: petty, sarcastic, jealous, confrontational, reviving old grievances. Let conflict flare wherever the cast gives it an opening, and let calm stretches stay calm.',
     '- Have accounts react to, quote, subtweet and argue with each other\'s posts from this same batch, so the timeline reads as one live, shared conversation.',
+    '- This is the whole cast\'s timeline, not a feed about the user. Give the accounts their own days, opinions, jokes, plans and quarrels with each other, and let the user come up only when they would genuinely be on that account\'s mind.',
     '- Ambient accounts are ordinary strangers outside the cast: have them follow, like, reply, repost, gossip and wander into public drama the way real bystanders do.',
     '- Use standard Unicode emoji wherever they suit the voice, and keep a post plain wherever plain reads best.',
 ].join('\n');
@@ -497,7 +498,7 @@ export function buildSystemPrompt(settings) {
         '# Rules',
         '- Express every action as exactly one of these: a post, poll, follow, like, repost, reply or poll vote.',
         '- Write strictly as the accounts listed under "Active Accounts", by their exact @handle, plus any strangers you introduce under "strangers" when the prompt allows them. Every single author and actor comes from that set.',
-        '- The user persona is controlled exclusively by the user: every post, reply, like, repost, vote and follow by the persona is the user\'s to write. Your only job with the persona is to have other accounts mention it, reply to it, react to its posts and follow it.',
+        '- The user persona is controlled exclusively by the user: every post, reply, like, repost, vote and follow by the persona is the user\'s to write. Other accounts may mention it, reply to it, react to its posts and follow it, as one account among many.',
         '- Aim every interaction at a post included in this prompt or a post you create in this response.',
         '- Set exactly one of targetTempId or targetPostId on every interaction and set the other to null.',
         '- To answer, like or repost an existing comment, target its post and set parentInteractionId to that comment\'s exact replyId; everywhere else set parentInteractionId to null.',
@@ -692,7 +693,12 @@ export function buildContextMessage({ accounts, active, persona, session = null,
     }
 
     if (persona) {
-        sections.push('# User Persona', characterBlock(persona), '');
+        sections.push(
+            '# User Persona',
+            'One account among many here: mentioned or answered when it fits, not the subject of the timeline.',
+            characterBlock(persona),
+            '',
+        );
     }
 
     const activeCharacters = active.filter(account => account.kind === KIND_CHARACTER);
@@ -735,7 +741,7 @@ export function buildContextMessage({ accounts, active, persona, session = null,
 
     sections.push(
         '# Recent Timeline',
-        'Replies to the persona are especially worth answering. Use a comment\'s replyId as parentInteractionId to answer, like or repost that comment directly.',
+        'Answer, like or repost a comment directly by putting its replyId in parentInteractionId. Spread reactions across the accounts below, not onto one person\'s posts.',
         formatTimeline(posts, interactions, accounts, { now }),
         '',
         '# Quotas',
@@ -800,7 +806,7 @@ export function buildTurnInstruction({ index = 1, total = 1, author = null, rema
         '# This Turn',
         `Post ${index} of ${total} in a rolling refresh; earlier posts from this refresh are already in the timeline above.`,
         who,
-        'Then add reactions from the other active accounts: replies, likes, reposts and poll votes on this new post and, where it is natural, on the recent posts above. Do not add reactions that repeat what an account already said.',
+        'Then add reactions from the other active accounts: replies, likes, reposts and poll votes on this new post and, where it is natural, on the recent posts above, spread across their authors rather than aimed at one person. Do not add reactions that repeat what an account already said.',
         `Remaining for the rest of this refresh: replies ${remaining.replies ?? 0}, reposts ${remaining.reposts ?? 0}, likes ${remaining.likes ?? 0}. Stay well under them; the later turns need room too.`,
     ].join('\n');
 }

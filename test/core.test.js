@@ -40,6 +40,7 @@ import {
     discountRepeatAuthors,
     mentionsHandle,
     summarizeRefresh,
+    buildSystemPrompt,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -285,6 +286,18 @@ test('a cut-off reply leaves a note in the refresh warnings', () => {
     const accounts = makeAccounts();
     const result = materializeRefresh({ posts: [], interactions: [], follows: [], salvaged: true }, { accounts, settings: settings(), newId, now: NOW });
     assert.ok(result.warnings.some(w => /cut off by the token cap/.test(w)));
+});
+
+test('the prompt keeps the persona one account among many', () => {
+    const accounts = makeAccounts();
+    const persona = accounts.find(a => a.kind === KIND_PERSONA);
+    const message = buildContextMessage({ accounts, active: accounts, persona, settings: settings(), now: NOW });
+    assert.match(message, /# User Persona\nOne account among many here/);
+    assert.doesNotMatch(message, /especially worth answering/);
+    const system = buildSystemPrompt(settings());
+    assert.match(system, /persona is controlled exclusively by the user/, 'the ownership rule stays');
+    assert.match(system, /not a feed about the user/);
+    assert.doesNotMatch(system, /Your only job with the persona/);
 });
 
 test('a topic refresh asks for posts about the topic and no trends', () => {
