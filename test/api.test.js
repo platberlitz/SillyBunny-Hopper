@@ -22,6 +22,7 @@ import {
     updateSession,
     writeFeed,
     generatePersonaProfile,
+    deleteSession,
 } from '../src/api.js';
 import { SETTINGS_KEY } from '../src/core.js';
 
@@ -223,6 +224,34 @@ test('each new timeline writes to its own feed file', async () => {
     assert.equal(names[0], 'twitterlike-feed.json');
     assert.match(names[1], /^twitterlike-feed-u1\.json$/);
     assert.notEqual(getSession(legacy.id).feedPath, getSession(second.id).feedPath);
+});
+
+test('deleteSession removes the feed file, the session and any pointer at it', async () => {
+    const legacy = ensureActiveSession();
+    const second = createSession({ name: 'Close friends', personaId: 'me.png', invited: ['ada.png'] });
+    fakeFetch((url, init) => {
+        if (url === '/api/files/upload') {
+            const { name } = JSON.parse(init.body);
+            return { ok: true, status: 200, json: async () => ({ path: `/user/files/${name}` }) };
+        }
+        return { ok: true, status: 200, json: async () => ({}) };
+    });
+    await writeFeed({ posts: [], interactions: [] }, second.id);
+    assert.equal(getSettings().activeSessionId, second.id);
+    await deleteSession(second.id);
+    const deletion = fetchCalls.find(([url]) => url === '/api/files/delete');
+    assert.equal(JSON.parse(deletion[1].body).path, '/user/files/twitterlike-feed-u1.json');
+    assert.equal(getSession(second.id), null);
+    assert.notEqual(getSettings().activeSessionId, second.id);
+    assert.ok(!Object.values(getSettings().activeSessionByPersona).includes(second.id));
+    assert.ok(getSession(legacy.id), 'other timelines stay');
+    // A timeline that was never saved has no file to delete.
+    const third = createSession({ name: 'Empty', personaId: 'me.png' });
+    const before = fetchCalls.length;
+    await deleteSession(third.id);
+    assert.equal(fetchCalls.length, before);
+    assert.equal(getSession(third.id), null);
+    await assert.rejects(() => deleteSession('nope'), /no longer exists/);
 });
 
 test('different timeline sessions derive different character casts', async () => {

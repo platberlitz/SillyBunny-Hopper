@@ -444,7 +444,8 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 /* A quote: the original post in a bordered card under the reposter's comment. */
-.sbtw-profile-actions {
+.sbtw-profile-actions,
+.sbtw-button-row {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
@@ -1104,6 +1105,12 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     display: flex;
     align-items: baseline;
     justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.sbtw-field-tools {
+    display: inline-flex;
+    align-items: baseline;
     gap: 0.75rem;
 }
 

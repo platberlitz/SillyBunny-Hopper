@@ -1436,6 +1436,7 @@ function settingsView() {
         return row;
     });
     const inviteCount = el('span', { className: 'sbtw-invite-count' });
+    const clearInvites = button('Clear invites', 'sbtw-btn sbtw-btn-quiet', () => setInvited([]), { title: 'Uninvite everyone' });
     const inviteEmpty = el('p', { className: 'sbtw-invite-empty' });
     const invites = el('div', { className: 'sbtw-invites' }, [...inviteRows, inviteEmpty]);
     const inviteSearch = el('input', {
@@ -1460,7 +1461,9 @@ function settingsView() {
         }
         inviteEmpty.hidden = visible > 0;
         inviteEmpty.textContent = query ? 'No characters match this search.' : 'No characters are available.';
-        inviteCount.textContent = query ? `${visible} of ${inviteRows.length}` : `${(api.getSession(session.id) ?? session).invited.length} invited`;
+        const invitedCount = (api.getSession(session.id) ?? session).invited.length;
+        inviteCount.textContent = query ? `${visible} of ${inviteRows.length}` : `${invitedCount} invited`;
+        clearInvites.disabled = !invitedCount;
     };
     let searchTimer = null;
     inviteSearch.addEventListener('input', () => {
@@ -1569,7 +1572,7 @@ function settingsView() {
         el('div', { className: 'sbtw-field' }, [
             el('div', { className: 'sbtw-field-heading' }, [
                 el('span', { className: 'sbtw-field-label', text: 'Characters' }),
-                inviteCount,
+                el('span', { className: 'sbtw-field-tools' }, [inviteCount, clearInvites]),
             ]),
             inviteSearch,
             invites,
@@ -1639,9 +1642,12 @@ function settingsView() {
             numberInput(settings.catchUpHours, 0, 720, value => save({ catchUpHours: value })),
             'Zero turns it off. Nothing happens while SillyBunny is closed - there is no server side to this.'),
 
-        el('h3', { text: 'Reset' }),
-        el('p', { className: 'sbtw-hint', text: 'Clears posts, replies, likes, reposts and votes. Profiles, follows and settings stay.' }),
-        button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetTimeline()),
+        el('h3', { text: 'Reset or delete' }),
+        el('p', { className: 'sbtw-hint', text: 'Reset clears posts, replies, likes, reposts and votes; profiles, follows and settings stay. Delete removes this whole timeline; other timelines and character profiles stay.' }),
+        el('div', { className: 'sbtw-button-row' }, [
+            button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetTimeline()),
+            button('Delete this timeline', 'sbtw-btn sbtw-btn-danger', () => void deleteTimeline(), { iconName: 'fa-trash' }),
+        ]),
     ]);
 }
 
@@ -1766,6 +1772,53 @@ function createTimeline() {
             }
             console.error('[Hopper] timeline creation failed', error);
             toast(String(error?.message ?? 'A new timeline could not be created.'), 'error');
+            return false;
+        } finally {
+            if (sessionTask === task) {
+                sessionTask = null;
+            }
+        }
+    })();
+    sessionTask = task;
+    return task;
+}
+
+/** Deletes the open timeline (feed file included) and opens the next one for this persona, or a fresh one. */
+async function deleteTimeline() {
+    if (state.busy || sessionTask || !state.session) {
+        return false;
+    }
+    const session = state.session;
+    const context = globalThis.SillyTavern.getContext();
+    const confirmed = await context.Popup.show.confirm(
+        `Delete "${session.name}"?`,
+        'Its posts, replies, reactions, follows and persona profile go for good. Other timelines and character profiles stay.',
+    );
+    if (!confirmed || state.session !== session || state.busy || sessionTask) {
+        return false;
+    }
+    const transition = ++transitionEpoch;
+    const task = (async () => {
+        try {
+            invalidateWork();
+            await closeFeedInternal(false);
+            if (transition !== transitionEpoch) {
+                return false;
+            }
+            await api.deleteSession(session.id);
+            const opened = await openFeedNow();
+            if (transition !== transitionEpoch || !opened) {
+                return false;
+            }
+            toast(`Deleted "${session.name}".`, 'success');
+            return true;
+        } catch (error) {
+            if (transition !== transitionEpoch) {
+                return false;
+            }
+            console.error('[Hopper] timeline delete failed', error);
+            toast(String(error?.message ?? 'The timeline could not be deleted.'), 'error');
+            await openFeedNow();
             return false;
         } finally {
             if (sessionTask === task) {

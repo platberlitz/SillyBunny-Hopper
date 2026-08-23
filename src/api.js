@@ -143,6 +143,41 @@ export function createSession({ name = '', type = '', personaId = '', invited = 
     return next.sessions[id];
 }
 
+/**
+ * Removes a timeline for good: its feed file on the host, its session entry and any active
+ * pointer at it. Other timelines and the shared character profiles are untouched. If it was
+ * the last one, the next open creates a fresh empty timeline.
+ */
+export async function deleteSession(sessionId) {
+    const context = ctx();
+    const settings = getSettings();
+    const session = settings.sessions[sessionId];
+    if (!session) {
+        throw new Error('That timeline session no longer exists.');
+    }
+    const path = session.feedPath || (sessionId === 'legacy' ? settings.shards[0] : '');
+    if (path) {
+        const response = await fetch('/api/files/delete', {
+            method: 'POST',
+            headers: context.getRequestHeaders(),
+            body: JSON.stringify({ path }),
+        });
+        // A file that is already gone is the outcome we wanted.
+        if (!response.ok && response.status !== 404) {
+            throw new Error(`Could not delete the timeline file (${response.status})`);
+        }
+    }
+    const fresh = getSettings();
+    const sessions = { ...fresh.sessions };
+    delete sessions[sessionId];
+    updateSettings({
+        sessions,
+        activeSessionId: fresh.activeSessionId === sessionId ? '' : fresh.activeSessionId,
+        activeSessionByPersona: Object.fromEntries(Object.entries(fresh.activeSessionByPersona).filter(([, id]) => id !== sessionId)),
+        ...(sessionId === 'legacy' ? { shards: [] } : {}),
+    });
+}
+
 export async function selectSession(sessionId, { personaId = null } = {}) {
     const before = getSettings();
     const session = before.sessions[sessionId];

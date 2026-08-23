@@ -42,7 +42,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 ## Using it
 
 1. Choose **Hopper** in the Character Menu or the wand menu. The picker at the top switches timelines; **New timeline** starts another.
-2. In **Settings**, invite at least one character (the search box matches names and tags), or let strangers join in.
+2. In **Settings**, invite at least one character (the search box matches names and tags; **Clear invites** empties the list), or let strangers join in.
 3. Press **Refresh**. The status line says what it is doing.
 
 **Posting.** Write in the box at the top. **Image** attaches a picture, **Poll** adds options, `@` mentions an account. Posts are plain text with `@handles` linked; no HTML or markdown.
@@ -83,7 +83,7 @@ All under **Settings** inside Hopper. The drawer in the Extensions panel only ho
 - **The default tone allows rude or explicit posts.** Rewrite it if that is not wanted.
 - **Each timeline is its own file** in the user files directory, not in `settings.json`.
 - **Existing installs keep their feed.** The original timeline becomes a session named **Timeline**.
-- **Reset** clears posts and reactions, not profiles, follows or settings.
+- **Reset** clears posts and reactions, not profiles, follows or settings. **Delete this timeline** removes the whole timeline, feed file included; other timelines and character profiles stay, and a fresh empty timeline opens if it was the last one.
 - Not in this version: GIFs and stickers, profile banners, nested thread trees, lorebook context, and showing generated pictures back to the model.
 
 ## Install
