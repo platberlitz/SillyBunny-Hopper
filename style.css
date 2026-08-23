@@ -395,6 +395,11 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     border-bottom: 1px solid var(--sbtw-divider);
 }
 
+/* Slack under the last entry, so closing a reply box at the end of the list cannot clamp the scroll and jump the page. */
+.sbtw-timeline-results {
+    padding-bottom: 25vh;
+}
+
 .sbtw-tab {
     flex: 1;
     padding: 0.7rem 0.5rem;
@@ -439,6 +444,13 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 /* A quote: the original post in a bordered card under the reposter's comment. */
+.sbtw-profile-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: flex-start;
+}
+
 .sbtw-quote-card {
     margin-top: 0.5rem;
     padding: 0.5rem 0.75rem;
@@ -792,6 +804,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 .sbtw-attachment img,
 .sbtw-image img {
     max-width: 100%;
+    height: auto;
     max-height: 24rem;
     border-radius: 0.75rem;
     object-fit: cover;
@@ -948,6 +961,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 
 .sbtw-profile-head {
     display: flex;
+    flex-wrap: wrap;
     align-items: flex-start;
     gap: var(--sbtw-gap);
     padding: var(--sbtw-gap) 0;
@@ -955,10 +969,24 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 .sbtw-profile-meta {
-    flex: 1;
+    /* Keeps a readable column beside the buttons; below that the buttons wrap under it. */
+    flex: 1 1 14rem;
     min-width: 0;
     /* A 20-character handle must wrap on a 320px screen, not push the layout out. */
     overflow-wrap: anywhere;
+}
+
+.sbtw-profile-actions {
+    margin-left: auto;
+}
+
+@media (max-width: 620px) {
+    /* On a phone the buttons take their own row under the name, lined up with it. */
+    .sbtw-profile-actions {
+        flex-basis: 100%;
+        margin-left: 0;
+        padding-left: calc(4.5rem + var(--sbtw-gap));
+    }
 }
 
 .sbtw-bio {

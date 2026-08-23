@@ -350,7 +350,13 @@ function storedPost(raw) {
         body: storedText(raw.body),
         createdAt: storedTime(raw.createdAt),
         image: isObj(raw.image) && typeof raw.image.url === 'string'
-            ? { url: raw.image.url, prompt: storedText(raw.image.prompt) }
+            ? {
+                url: raw.image.url,
+                prompt: storedText(raw.image.prompt),
+                ...(Number.isInteger(raw.image.width) && raw.image.width > 0 && Number.isInteger(raw.image.height) && raw.image.height > 0
+                    ? { width: raw.image.width, height: raw.image.height }
+                    : {}),
+            }
             : null,
         poll: pollRaw && typeof pollRaw.question === 'string' && options.length >= 2
             ? {
@@ -725,13 +731,13 @@ async function runGeneration(messages, maxTokens, signal) {
     return context.generateRaw({ prompt, systemPrompt: system, responseLength: maxTokens, signal });
 }
 
-async function generateProfilesFor(accounts, allAccounts, signal) {
+async function generateProfilesFor(accounts, allAccounts, signal, { avoid = null } = {}) {
     if (!accounts.length) {
         return {};
     }
     const targets = new Set(accounts.map(account => account.key));
     const others = allAccounts.filter(account => !targets.has(account.key));
-    const messages = buildProfileMessages(accounts);
+    const messages = buildProfileMessages(accounts, { avoid: avoid ?? others.map(account => account.handle) });
     const maxTokens = PROFILE_MAX_TOKENS_BASE * (1 + accounts.length);
     const raw = await runGeneration(messages, maxTokens, signal);
     try {
@@ -758,6 +764,25 @@ export async function generatePersonaProfile(sessionId = ensureActiveSession().i
         return null;
     }
     return { name: profile.name, handle: profile.handle, bio: profile.bio, location: profile.location };
+}
+
+/**
+ * Writes a character a fresh timeline profile (name, handle, bio, location), ruling out its
+ * current handle and everyone else's, and saves it. Returns the profile or null.
+ */
+export async function regenerateProfile(accountKey, sessionId = ensureActiveSession().id, { signal } = {}) {
+    const accounts = await currentAccounts(sessionId);
+    const account = accounts.find(item => item.key === accountKey) ?? null;
+    if (!account || account.kind !== KIND_CHARACTER) {
+        throw new Error('Only characters can be given a new profile here.');
+    }
+    const profiles = await generateProfilesFor([account], accounts, signal, { avoid: accounts.map(item => item.handle) });
+    const profile = profiles[account.key];
+    if (!profile) {
+        return null;
+    }
+    updateSettings({ profiles: { ...getSettings().profiles, [account.key]: profile } });
+    return profile;
 }
 
 export async function generatePostImage(prompt, signal) {

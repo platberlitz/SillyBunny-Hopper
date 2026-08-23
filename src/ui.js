@@ -20,6 +20,9 @@ import {
     formatCount,
     buildNotifications,
     countUnseen,
+    rankScore,
+    discountRepeatAuthors,
+    mentionsHandle,
 } from './core.js';
 import * as api from './api.js';
 
@@ -51,6 +54,8 @@ const state = {
     draftOwner: null,
     characterSearch: '',
     timelineSearch: '',
+    /** Bumped whenever a refresh lands (or the timeline is reset); Main's ranking is frozen in between. */
+    feedEpoch: 0,
 };
 
 const owned = new Set();
@@ -180,8 +185,14 @@ function handleFor(key, snapshot) {
 
 // One pass over the interactions per render, instead of a full scan inside every
 // comparator and every post node. Rebuilt at the top of render().
-const EMPTY_STATS = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0 };
+const EMPTY_STATS = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0, onReply: new Map() };
+const EMPTY_REPLY_STATS = { items: [], like: 0, repost: 0, mine: new Map() };
 let byPost = new Map();
+
+/** A like or repost whose parent is a comment sits on that comment, not on the post. */
+function onComment(item) {
+    return (item.type === 'like' || item.type === 'repost') && Boolean(item.parentInteractionId);
+}
 
 function buildInteractionMap() {
     const map = new Map();
@@ -189,15 +200,30 @@ function buildInteractionMap() {
     for (const item of state.feed.interactions) {
         let entry = map.get(item.postId);
         if (!entry) {
-            entry = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0 };
+            entry = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0, onReply: new Map() };
             map.set(item.postId, entry);
+        }
+        if (onComment(item)) {
+            let bucket = entry.onReply.get(item.parentInteractionId);
+            if (!bucket) {
+                bucket = { items: [], like: 0, repost: 0, mine: new Map() };
+                entry.onReply.set(item.parentInteractionId, bucket);
+            }
+            bucket.items.push(item);
+            bucket[item.type] += 1;
+            if (me && item.actorKey === me.key) {
+                bucket.mine.set(item.type, item);
+            }
+            continue;
         }
         entry.items.push(item);
         entry[item.type] += 1;
         if (me && item.actorKey === me.key) {
             entry.mine.set(item.type, item);
         }
-        if (item.type === 'reply' && item.createdAt > entry.latestReplyAt) {
+        // Only other people's replies bump a conversation in Main: your own answer must not
+        // fling the post you are reading to the top of the list.
+        if (item.type === 'reply' && item.actorKey !== me?.key && item.createdAt > entry.latestReplyAt) {
             entry.latestReplyAt = item.createdAt;
         }
     }
@@ -220,6 +246,10 @@ function myInteraction(postId, type) {
     return statsFor(postId).mine.get(type) ?? null;
 }
 
+function replyStatsFor(postId, replyId) {
+    return statsFor(postId).onReply.get(replyId) ?? EMPTY_REPLY_STATS;
+}
+
 /** Only replies bump a conversation; likes and votes must not reorder the timeline. */
 function activityAt(post) {
     return Math.max(post.createdAt, statsFor(post.id).latestReplyAt);
@@ -228,6 +258,68 @@ function activityAt(post) {
 function followingKeys() {
     const me = personaAccount();
     return new Set(me ? (state.session?.follows[me.key] ?? []) : []);
+}
+
+// Main's order is frozen between refreshes: likes and replies change the scores, and a
+// feed that reorders under your finger is exactly the jump we avoid. Entries that appear
+// in between (your own posts) sit on top, newest first.
+let mainRank = { key: '', order: new Map() };
+
+function entryKey(entry) {
+    return entry.repost ? `repost:${entry.repost.id}` : `post:${entry.post.id}`;
+}
+
+/** How often the persona has liked, replied to or reposted each author: a cheap stand-in for "accounts you interact with". */
+function authorAffinity(me) {
+    const map = new Map();
+    if (!me) {
+        return map;
+    }
+    const authorOf = new Map(state.feed.posts.map(post => [post.id, post.authorKey]));
+    for (const item of state.feed.interactions) {
+        const author = item.actorKey === me.key && item.type !== 'vote' ? authorOf.get(item.postId) : null;
+        if (author && author !== me.key) {
+            map.set(author, (map.get(author) ?? 0) + 1);
+        }
+    }
+    return map;
+}
+
+function mainComparator(entries, me, following) {
+    const key = `${state.session?.id ?? ''}|${state.feedEpoch}`;
+    if (mainRank.key !== key) {
+        const affinity = authorAffinity(me);
+        const handle = me ? handleFor(me.key) : '';
+        const now = Date.now();
+        for (const entry of entries) {
+            const stats = statsFor(entry.post.id);
+            const actorKey = entry.repost ? entry.repost.actorKey : entry.post.authorKey;
+            entry.score = rankScore({
+                createdAt: entry.repost ? entry.repost.createdAt : entry.post.createdAt,
+                latestActivityAt: entry.repost ? 0 : stats.latestReplyAt,
+                like: entry.repost ? 0 : stats.like,
+                reply: entry.repost ? 0 : stats.reply,
+                repost: entry.repost ? 0 : stats.repost,
+                vote: entry.repost ? 0 : stats.vote,
+                followed: following.has(actorKey),
+                mine: Boolean(me) && actorKey === me.key,
+                mentionsMe: mentionsHandle(entry.repost?.content ?? entry.post.body, handle),
+                affinity: affinity.get(actorKey) ?? 0,
+            }, now);
+        }
+        discountRepeatAuthors(entries, entry => entry.repost ? entry.repost.actorKey : entry.post.authorKey);
+        const ranked = [...entries].sort((a, b) => (b.score - a.score) || (b.sortAt - a.sortAt));
+        mainRank = { key, order: new Map(ranked.map((entry, index) => [entryKey(entry), index])) };
+    }
+    const order = mainRank.order;
+    return (a, b) => {
+        const ra = order.get(entryKey(a));
+        const rb = order.get(entryKey(b));
+        if (ra === undefined || rb === undefined) {
+            return ra === undefined && rb === undefined ? b.sortAt - a.sortAt : (ra === undefined ? -1 : 1);
+        }
+        return ra - rb;
+    };
 }
 
 function visibleTimelineEntries(query = state.timelineSearch) {
@@ -251,12 +343,32 @@ function visibleTimelineEntries(query = state.timelineSearch) {
         || following.has(post.authorKey)
         || repost);
 
+    // A reposted comment is its own entry, carrying the comment: in Following when the
+    // reposter is you or someone you follow, like a plain repost of a post.
+    if (state.tab === 'following') {
+        for (const post of state.feed.posts) {
+            for (const [replyId, bucket] of statsFor(post.id).onReply) {
+                const repost = bucket.items
+                    .filter(item => item.type === 'repost' && relevantReposters.has(item.actorKey))
+                    .sort((a, b) => b.createdAt - a.createdAt)[0];
+                const reply = repost ? interactionsFor(post.id).find(item => item.id === replyId) : null;
+                if (reply) {
+                    entries.push({ post, reply, repost, sortAt: repost.createdAt });
+                }
+            }
+        }
+    }
+
     // A repost with a comment is a quote: it gets its own entry in Main and Latest, as on the real thing.
     if (state.tab === 'main' || state.tab === 'latest') {
         const byId = new Map(state.feed.posts.map(post => [post.id, post]));
         for (const item of state.feed.interactions) {
             if (item.type === 'repost' && item.content && byId.has(item.postId)) {
-                entries.push({ post: byId.get(item.postId), repost: item, sortAt: item.createdAt });
+                const reply = item.parentInteractionId ? interactionsFor(item.postId).find(other => other.id === item.parentInteractionId) : null;
+                if (item.parentInteractionId && !reply) {
+                    continue;
+                }
+                entries.push({ post: byId.get(item.postId), reply, repost: item, sortAt: item.createdAt });
             }
         }
     }
@@ -274,9 +386,10 @@ function visibleTimelineEntries(query = state.timelineSearch) {
         return { entries: trending.slice(0, FEED_LIMIT), total: trending.length };
     }
 
+    const order = state.tab === 'main' ? mainComparator(entries, me, following) : (a, b) => b.sortAt - a.sortAt;
     const matches = entries
         .filter(({ post }) => matchesTimelineQuery(post, interactionsFor(post.id), query))
-        .sort((a, b) => b.sortAt - a.sortAt);
+        .sort(order);
     const visible = matches.slice(0, FEED_LIMIT);
     const targetPostId = state.replyingTo?.postId;
     if (!String(query ?? '').trim() && targetPostId && !visible.some(entry => entry.post.id === targetPostId)) {
@@ -386,11 +499,23 @@ function imageNode(post) {
     if (!post.image?.url) {
         return null;
     }
+    // Known dimensions reserve the box before the image arrives, so a re-render cannot shift
+    // everything below it once it loads. Measured on first sight and saved with the post.
+    const img = el('img', { attrs: { src: post.image.url, alt: post.image.prompt ?? '', loading: 'lazy', width: post.image.width || null, height: post.image.height || null } });
+    if (!post.image.width) {
+        img.addEventListener('load', () => {
+            if (img.naturalWidth && img.naturalHeight && !post.image.width) {
+                post.image.width = img.naturalWidth;
+                post.image.height = img.naturalHeight;
+                persist();
+            }
+        }, { once: true });
+    }
     return el('button', {
         className: 'sbtw-image',
         attrs: { type: 'button', title: 'Open image' },
         on: { click: () => openImage(post.image.url) },
-    }, [el('img', { attrs: { src: post.image.url, alt: post.image.prompt ?? '', loading: 'lazy' } })]);
+    }, [img]);
 }
 
 const replyDrafts = new Map();
@@ -419,52 +544,54 @@ function setReplyTarget(postId, parentInteractionId = null, { toggle = true } = 
     render();
 }
 
+/** One action on a post or a comment. With `who`, the count is its own button that opens the list of who did it. */
+function actionButton(ownerId, me, iconName, count, active, onClick, label, who = null) {
+    const button = el('button', {
+        className: `sbtw-action${active ? ' sbtw-action-on' : ''}`,
+        attrs: { type: 'button', title: label, 'aria-label': label, 'aria-pressed': String(active), disabled: !me },
+        on: { click: onClick },
+    }, [icon(iconName)]);
+    if (!(count > 0)) {
+        return button;
+    }
+    if (!who) {
+        button.append(el('span', { className: 'sbtw-action-count', text: String(count) }));
+        return button;
+    }
+    // The count is its own button: tap it to see who did this, without toggling your own like.
+    const key = `${ownerId}:${who}`;
+    const open = state.engagementFor === key;
+    const countButton = el('button', {
+        className: `sbtw-action-count sbtw-action-who${open ? ' sbtw-action-who-on' : ''}`,
+        text: String(count),
+        attrs: { type: 'button', title: who === 'like' ? 'See who liked this' : 'See who reposted this', 'aria-label': `${count} ${who === 'like' ? 'likes' : 'reposts'}, see who`, 'aria-expanded': String(open) },
+        on: { click: () => { state.engagementFor = open ? null : key; render(); } },
+    });
+    return el('span', { className: 'sbtw-action-group' }, [button, countButton]);
+}
+
 function actionsNode(post) {
     const me = personaAccount();
     const liked = Boolean(myInteraction(post.id, 'like'));
     const reposted = Boolean(myInteraction(post.id, 'repost'));
     const replies = countOf(post.id, 'reply');
-
-    const action = (iconName, count, active, onClick, label, who = null) => {
-        const button = el('button', {
-            className: `sbtw-action${active ? ' sbtw-action-on' : ''}`,
-            attrs: { type: 'button', title: label, 'aria-label': label, 'aria-pressed': String(active), disabled: !me },
-            on: { click: onClick },
-        }, [icon(iconName)]);
-        if (!(count > 0)) {
-            return button;
-        }
-        if (!who) {
-            button.append(el('span', { className: 'sbtw-action-count', text: String(count) }));
-            return button;
-        }
-        // The count is its own button: tap it to see who did this, without toggling your own like.
-        const key = `${post.id}:${who}`;
-        const open = state.engagementFor === key;
-        const countButton = el('button', {
-            className: `sbtw-action-count sbtw-action-who${open ? ' sbtw-action-who-on' : ''}`,
-            text: String(count),
-            attrs: { type: 'button', title: who === 'like' ? 'See who liked this' : 'See who reposted this', 'aria-label': `${count} ${who === 'like' ? 'likes' : 'reposts'}, see who`, 'aria-expanded': String(open) },
-            on: { click: () => { state.engagementFor = open ? null : key; render(); } },
-        });
-        return el('span', { className: 'sbtw-action-group' }, [button, countButton]);
-    };
+    const action = (...args) => actionButton(post.id, me, ...args);
 
     return el('div', { className: 'sbtw-actions' }, [
-        action('fa-heart', countOf(post.id, 'like'), liked, () => toggle(post, 'like'), liked ? 'Unlike' : 'Like', 'like'),
-        action('fa-retweet', countOf(post.id, 'repost'), reposted, () => toggle(post, 'repost'), reposted ? 'Undo repost' : 'Repost', 'repost'),
+        action('fa-heart', countOf(post.id, 'like'), liked, () => toggle(post.id, 'like'), liked ? 'Unlike' : 'Like', 'like'),
+        action('fa-retweet', countOf(post.id, 'repost'), reposted, () => toggle(post.id, 'repost'), reposted ? 'Undo repost' : 'Repost', 'repost'),
         action('fa-comment', replies, isReplyTarget(post.id), () => setReplyTarget(post.id), 'Reply'),
     ]);
 }
 
 /** Who liked or reposted a post, shown under its actions while the count is open. */
-function engagementNode(post) {
+function engagementNode(ownerId, interactions) {
     const key = String(state.engagementFor ?? '');
-    if (!key.startsWith(`${post.id}:`)) {
+    if (!key.startsWith(`${ownerId}:`)) {
         return null;
     }
-    const type = key.slice(post.id.length + 1);
-    const items = interactionsFor(post.id)
+    const type = key.slice(ownerId.length + 1);
+    const items = interactions
         .filter(item => item.type === type)
         .sort((a, b) => b.createdAt - a.createdAt);
     const title = type === 'like' ? 'Liked by' : 'Reposted by';
@@ -494,7 +621,10 @@ function replyNode(reply) {
     const me = personaAccount();
     const handle = handleFor(reply.actorKey, reply.actorSnapshot);
     const targeted = isReplyTarget(reply.postId, reply.id);
-    return el('div', { className: 'sbtw-reply', attrs: { 'data-kind': reply.actorSnapshot?.kind ?? '' } }, [
+    const stats = replyStatsFor(reply.postId, reply.id);
+    const liked = Boolean(stats.mine.get('like'));
+    const reposted = Boolean(stats.mine.get('repost'));
+    return el('div', { className: 'sbtw-reply', attrs: { 'data-kind': reply.actorSnapshot?.kind ?? '', 'data-reply-id': reply.id } }, [
         // The avatar shares a row with the name block so it stays centred on it even when the time wraps.
         el('div', { className: 'sbtw-reply-head' }, [
             avatarNode(account ?? reply.actorSnapshot ?? null, 'sm'),
@@ -518,6 +648,8 @@ function replyNode(reply) {
                 : null,
             el('div', { className: 'sbtw-body' }, [bodyNode(reply.content)]),
             el('div', { className: 'sbtw-reply-actions' }, [
+                actionButton(reply.id, me, 'fa-heart', stats.like, liked, () => toggle(reply.postId, 'like', reply), liked ? 'Unlike' : 'Like', 'like'),
+                actionButton(reply.id, me, 'fa-retweet', stats.repost, reposted, () => toggle(reply.postId, 'repost', reply), reposted ? 'Undo repost' : 'Repost', 'repost'),
                 me ? button('Reply', `sbtw-action${targeted ? ' sbtw-action-on' : ''}`,
                     () => setReplyTarget(reply.postId, reply.id), {
                         iconName: 'fa-comment',
@@ -531,7 +663,37 @@ function replyNode(reply) {
                     })
                     : null,
             ]),
+            engagementNode(reply.id, stats.items),
         ]),
+    ]);
+}
+
+/** Someone reposted a comment: the reposter speaks first if they added a comment, then the comment, then the post it was on. */
+function repostedReplyNode({ post, reply, repost }) {
+    const actor = accountFor(repost.actorKey);
+    return el('article', { className: 'sbtw-post sbtw-reply-repost', attrs: { 'data-repost-id': repost.id } }, [
+        el('div', { className: 'sbtw-repost-context' }, [
+            icon('fa-retweet'),
+            el('span', { text: `${nameFor(repost.actorKey, repost.actorSnapshot)} reposted a reply${repost.content ? ' with a comment' : ''}` }),
+        ]),
+        repost.content ? el('div', { className: 'sbtw-post-row' }, [
+            avatarNode(actor ?? repost.actorSnapshot ?? null, 'md'),
+            el('div', { className: 'sbtw-post-main' }, [
+                el('div', { className: 'sbtw-meta' }, [
+                    el('button', {
+                        className: 'sbtw-name',
+                        text: nameFor(repost.actorKey, repost.actorSnapshot),
+                        attrs: { type: 'button' },
+                        on: { click: () => showProfile(repost.actorKey) },
+                    }),
+                    el('span', { className: 'sbtw-handle', text: `@${handleFor(repost.actorKey, repost.actorSnapshot)}` }),
+                    el('span', { className: 'sbtw-time', text: dateFormat.format(new Date(repost.createdAt)) }),
+                ]),
+                el('div', { className: 'sbtw-body' }, [bodyNode(repost.content)]),
+            ]),
+        ]) : null,
+        replyNode(reply),
+        el('div', { className: 'sbtw-quote-card' }, [postNode(post, null, { compact: true })]),
     ]);
 }
 
@@ -576,7 +738,7 @@ function postNode(post, repost = null, { compact = false } = {}) {
                 pollNode(post),
                 imageNode(post),
                 compact ? null : actionsNode(post),
-                compact ? null : engagementNode(post),
+                compact ? null : engagementNode(post.id, interactionsFor(post.id)),
                 !compact && state.replyingTo?.postId === post.id ? replyComposer(post) : null,
                 replies.length ? el('div', { className: 'sbtw-replies' }, replies.map(replyNode)) : null,
             ]),
@@ -637,7 +799,11 @@ function replyComposer(post) {
     attachMentionPicker(field);
     if (pendingReplyFocus === key) {
         pendingReplyFocus = null;
-        queueMicrotask(() => field.focus());
+        // Focus without the browser's own scroll, then reveal the box by the shortest move rather than a jump to centre it.
+        queueMicrotask(() => {
+            field.focus({ preventScroll: true });
+            field.scrollIntoView({ block: 'nearest' });
+        });
     }
     const send = button('Reply', 'sbtw-btn sbtw-btn-primary', () => {
         const text = field.value.trim();
@@ -871,7 +1037,7 @@ function timelineView() {
         resultStatus.textContent = query ? `${total} ${total === 1 ? 'result' : 'results'}` : '';
         if (entries.length) {
             results.replaceChildren(el('div', { className: 'sbtw-list' },
-                entries.map(({ post, repost }) => postNode(post, repost))));
+                entries.map(entry => entry.reply ? repostedReplyNode(entry) : postNode(entry.post, entry.repost))));
             return;
         }
         results.replaceChildren(el('div', { className: 'sbtw-empty' }, [
@@ -974,17 +1140,61 @@ function profileView() {
                 account.location ? el('div', { className: 'sbtw-location' }, [icon('fa-location-dot'), el('span', { text: account.location })]) : null,
                 el('div', { className: 'sbtw-counts', text: `${(follows[account.key] ?? []).length} following  ·  ${followerCount} followers` }),
             ]),
-            canFollow
-                ? button(following.has(account.key) ? 'Following' : 'Follow',
-                    `sbtw-btn ${following.has(account.key) ? 'sbtw-btn-quiet' : 'sbtw-btn-primary'}`,
-                    () => toggleFollow(account.key))
-                : null,
+            el('div', { className: 'sbtw-profile-actions' }, [
+                canFollow
+                    ? button(following.has(account.key) ? 'Following' : 'Follow',
+                        `sbtw-btn ${following.has(account.key) ? 'sbtw-btn-quiet' : 'sbtw-btn-primary'}`,
+                        () => toggleFollow(account.key))
+                    : null,
+                account.kind === KIND_CHARACTER
+                    ? button('New profile', 'sbtw-btn sbtw-btn-quiet', () => void rewriteProfile(account.key), {
+                        iconName: 'fa-wand-magic-sparkles',
+                        title: 'Ask the posts connection for a fresh handle, name and bio for this character',
+                    })
+                    : null,
+            ]),
         ]),
         section('Posts', posts.map(post => postNode(post)), 'Nothing posted yet.'),
         section('Reposts', reposts.map(({ item, post }) => postNode(post, item)), 'Nothing reposted yet.'),
         section('Likes', liked.map(post => postNode(post)), 'Nothing liked yet.'),
         section('Media', media.map(post => postNode(post)), 'No pictures yet.'),
     ]);
+}
+
+/** A fresh handle, name and bio for a character, written by the posts connection; the old handle is ruled out. */
+async function rewriteProfile(accountKey) {
+    if (state.busy || !state.session) {
+        return;
+    }
+    const sessionId = state.session.id;
+    const { epoch, signal } = freshSignal();
+    state.busy = true;
+    state.status = 'Writing a new profile...';
+    render();
+    try {
+        const profile = await api.regenerateProfile(accountKey, sessionId, { signal });
+        if (!isLive(epoch)) {
+            return;
+        }
+        if (!profile) {
+            toast('The model did not return a usable profile. Try again.', 'warning');
+            return;
+        }
+        await refreshAccounts(sessionId);
+        toast(`New profile: ${profile.name} @${profile.handle}`, 'success');
+    } catch (error) {
+        if (signal.aborted) {
+            return;
+        }
+        console.error('[Hopper] profile rewrite failed', error);
+        toast(error?.message || 'The profile could not be written - check your connection settings.', 'error');
+    } finally {
+        if (isLive(epoch)) {
+            state.busy = false;
+            state.status = '';
+            render();
+        }
+    }
 }
 
 function section(title, nodes, emptyText) {
@@ -1024,11 +1234,13 @@ const NOTIFICATION_VERB = {
     vote: 'voted in your poll',
     reply: 'replied to you',
     'comment-reply': 'replied to your comment',
+    'comment-like': 'liked your reply',
+    'comment-repost': 'reposted your reply',
     mention: 'mentioned you',
     post: 'posted',
 };
 const NOTIFICATION_EMPTY = {
-    likes: 'No likes, reposts or poll votes on your posts yet.',
+    likes: 'No likes, reposts or poll votes on your posts or replies yet.',
     replies: 'No replies yet. Post something and run a refresh.',
     posts: 'No mentions yet, and nothing new from the accounts you follow.',
 };
@@ -1587,6 +1799,7 @@ function render() {
         return;
     }
     const oldMain = state.body.querySelector('.sbtw-main');
+    const anchor = oldMain?.dataset.scrollKey ? scrollAnchorOf(oldMain) : null;
     if (oldMain?.dataset.scrollKey) {
         scrollPositions.set(oldMain.dataset.scrollKey, oldMain.scrollTop);
     }
@@ -1632,6 +1845,55 @@ function render() {
     const rail = state.view === 'timeline' ? whoToFollow() : null;
     state.body.replaceChildren(...(rail ? [nav, main, rail] : [nav, main]));
     main.scrollTop = scrollPositions.get(scrollKey) ?? 0;
+    if (anchor && oldMain.dataset.scrollKey === scrollKey) {
+        pinScrollAnchor(main, anchor);
+    }
+}
+
+/**
+ * Re-rendering replaces the whole scroller, and a raw scrollTop only survives that when
+ * nothing above the reader changed height: a reply box opening or closing, a count
+ * widening or an image arriving all move the page under the finger. So remember the
+ * innermost post, reply or repost under the top edge and how far down it sat, and put
+ * that same item back at that same place after the rebuild.
+ */
+function scrollAnchorOf(main) {
+    const top = main.getBoundingClientRect().top;
+    // Probe a little below the edge: a sub-pixel sliver of the item above is not what the
+    // reader is looking at, and pinning it would let its own growth push everything down.
+    const probe = top + 24;
+    let spanning = null;
+    let next = null;
+    for (const node of main.querySelectorAll('[data-post-id], [data-reply-id], [data-repost-id]')) {
+        const rect = node.getBoundingClientRect();
+        if (rect.top <= probe && rect.bottom > probe) {
+            spanning = node; // descendants come later in document order, so the innermost wins
+        } else if (!next && rect.top > probe) {
+            next = node;
+        }
+    }
+    const node = spanning ?? next;
+    return node ? { selector: anchorSelector(node), offset: node.getBoundingClientRect().top - top } : null;
+}
+
+function anchorSelector(node) {
+    const own = node.dataset.postId ? `[data-post-id="${CSS.escape(node.dataset.postId)}"]`
+        : node.dataset.replyId ? `[data-reply-id="${CSS.escape(node.dataset.replyId)}"]`
+            : `[data-repost-id="${CSS.escape(node.dataset.repostId)}"]`;
+    // A reply can be on screen twice (under its post and inside a repost of it): scope it to its card.
+    const card = node.parentElement?.closest('[data-post-id], [data-repost-id]');
+    return card ? `${anchorSelector(card)} ${own}` : own;
+}
+
+function pinScrollAnchor(main, anchor) {
+    const node = main.querySelector(anchor.selector);
+    if (!node) {
+        return;
+    }
+    const delta = node.getBoundingClientRect().top - main.getBoundingClientRect().top - anchor.offset;
+    if (delta) {
+        main.scrollTop += delta;
+    }
 }
 
 function scrollToPost(postId) {
@@ -1757,8 +2019,9 @@ async function deleteReply(reply) {
     if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed || state.busy) {
         return;
     }
+    // Likes and reposts of the comment go with it; replies to it stay, unthreaded.
     feed.interactions = feed.interactions
-        .filter(item => item.id !== reply.id)
+        .filter(item => item.id !== reply.id && !(onComment(item) && item.parentInteractionId === reply.id))
         .map(item => item.parentInteractionId === reply.id ? { ...item, parentInteractionId: null } : item);
     if (state.replyingTo?.parentInteractionId === reply.id) {
         replyDrafts.delete(replyTargetKey(state.replyingTo));
@@ -1769,7 +2032,8 @@ async function deleteReply(reply) {
     render();
 }
 
-function toggle(post, type) {
+/** Like or repost a post, or with `reply` that comment itself; a second tap takes it back. */
+function toggle(postId, type, reply = null) {
     if (state.busy) {
         return;
     }
@@ -1777,18 +2041,18 @@ function toggle(post, type) {
     if (!me) {
         return;
     }
-    const existing = myInteraction(post.id, type);
+    const existing = reply ? (replyStatsFor(postId, reply.id).mine.get(type) ?? null) : myInteraction(postId, type);
     if (existing) {
         state.feed.interactions = state.feed.interactions.filter(item => item !== existing);
     } else {
         const context = globalThis.SillyTavern.getContext();
         state.feed.interactions.push({
             id: context.uuidv4(),
-            postId: post.id,
+            postId,
             type,
             actorKey: me.key,
             content: null,
-            parentInteractionId: null,
+            parentInteractionId: reply?.id ?? null,
             pollOptionIndex: null,
             createdAt: Date.now(),
             actorSnapshot: snapshotOf(me),
@@ -1916,6 +2180,7 @@ async function refresh({ topic = '' } = {}) {
             // One-post-at-a-time mode: each committed post is shown as it lands.
             onPartial: () => {
                 if (isLive(epoch) && state.view === 'timeline') {
+                    state.feedEpoch += 1;
                     byPost = buildInteractionMap();
                     render();
                 }
@@ -1924,6 +2189,7 @@ async function refresh({ topic = '' } = {}) {
         if (!isLive(epoch)) {
             return;
         }
+        state.feedEpoch += 1;
         state.session = api.getSession(sessionId);
         await refreshAccounts(sessionId);
         if (!isLive(epoch)) {

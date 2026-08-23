@@ -31,8 +31,8 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 - **Refresh** picks a few invited characters and asks the model for posts, replies, reposts, likes, follows and poll votes in one request.
 - Optional **strangers**: passers-by the model invents. They get profiles, can be followed, and come back later.
 - Characters sometimes repost with a comment; a quote shows the comment with the original post in a card underneath.
-- Post, reply, like and repost by hand, with pictures and polls; each poll option shows the avatars of who voted for it. `@` in a composer lists the accounts the timeline knows.
-- **Main**, **Latest**, **Following** and **Trending** tabs; Main bumps a conversation when it gets replies, Latest is strictly newest first; Trending sits under a bar of made-up topics; tap one and the model writes a round of posts about it, up to the usual post cap. A search box filters the timeline.
+- Post, reply, like and repost by hand, with pictures and polls; replies can be liked and reposted too (a reposted reply shows in Following with the post it was on), and each poll option shows the avatars of who voted for it. `@` in a composer lists the accounts the timeline knows.
+- **Main**, **Latest**, **Following** and **Trending** tabs. Main is ranked like a "For you" feed: fresh posts first, lifted by how much they are talked about, by accounts you follow or keep interacting with, and by mentions of you, with one author never stacking the top; the order is frozen between refreshes so liking or replying does not reshuffle it. Latest is strictly newest first; Trending sits under a bar of made-up topics; tap one and the model writes a round of posts about it, up to the usual post cap. A search box filters the timeline.
 - Tap a like or repost count to see who did it.
 - **Notifications** in three tabs, Likes, Replies and Posts (mentions, and new posts from accounts you follow), with a badge on the bell for anything new.
 - Profiles with Posts, Reposts, Likes and Media; follow or unfollow from there.
@@ -68,7 +68,7 @@ All under **Settings** inside Hopper. The drawer in the Extensions panel only ho
 
 - **Who posts** - the cast, whether strangers may join, and how many accounts are active per refresh.
 - **Timeline identity** - name, freeform type (what sort of social setting this is), persona and Scenario Notes.
-- **Persona profile** - a timeline-only name, handle, bio and location. **Write it with the model** drafts them from the persona description.
+- **Persona profile** - a timeline-only name, handle, bio and location. **Write it with the model** drafts them from the persona description. Characters get theirs on their first refresh; **New profile** on a character's page asks for a fresh handle, name and bio (the old handle is ruled out).
 - **Connection** - which connection profile writes the posts; unset, the current one. A cheap model is fine.
 - **How much each refresh makes** - caps for posts, replies, reposts and likes (defaults 8, 12, 4 and 18).
 - **One post at a time** - one request per post. Slower overall, but the first post shows up in seconds.

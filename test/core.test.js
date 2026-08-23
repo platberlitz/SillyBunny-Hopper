@@ -36,6 +36,9 @@ import {
     formatCount,
     buildNotifications,
     countUnseen,
+    rankScore,
+    discountRepeatAuthors,
+    mentionsHandle,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -147,6 +150,101 @@ test('buildNotifications groups likes, replies and posts for the persona, newest
     assert.equal(countUnseen(groups, 0), 7);
     assert.equal(countUnseen(groups, 30), 3, 'i4, i5 and p4 arrived after 30');
     assert.deepEqual(buildNotifications({ posts, interactions, personaKey: '' }), { likes: [], replies: [], posts: [] });
+});
+
+test('likes and reposts on a comment notify only the comment author', () => {
+    const posts = [
+        { id: 'p1', authorKey: 'persona:me.png', body: 'mine', createdAt: 10 },
+        { id: 'p3', authorKey: 'character:bo.png', body: 'plain', createdAt: 30 },
+    ];
+    const interactions = [
+        { id: 'i2', postId: 'p1', type: 'reply', actorKey: 'character:bo.png', content: 'no', parentInteractionId: null, createdAt: 12 },
+        { id: 'i3', postId: 'p3', type: 'reply', actorKey: 'persona:me.png', content: 'mine on bo', parentInteractionId: null, createdAt: 32 },
+        { id: 'i7', postId: 'p3', type: 'like', actorKey: 'character:ada.png', content: null, parentInteractionId: 'i3', createdAt: 42 },
+        { id: 'i8', postId: 'p1', type: 'repost', actorKey: 'character:ada.png', content: null, parentInteractionId: 'i2', createdAt: 43 },
+        { id: 'i9', postId: 'p3', type: 'repost', actorKey: 'character:bo.png', content: 'look', parentInteractionId: 'i3', createdAt: 44 },
+    ];
+    const groups = buildNotifications({ posts, interactions, personaKey: 'persona:me.png', personaHandle: 'me' });
+    assert.deepEqual(groups.likes.map(i => `${i.kind}:${i.interactionId}`), ['comment-repost:i9', 'comment-like:i7'], 'i8 sits on bo\'s comment, not mine');
+});
+
+test('the model may like or repost a comment: once per account, on this post, never its own', () => {
+    const accounts = makeAccounts();
+    const existingPosts = [{ id: 'p1', authorKey: 'character:ada.png', body: 'hello', createdAt: NOW }];
+    const existingInteractions = [
+        { id: 'r1', postId: 'p1', type: 'reply', actorKey: 'character:bo.png', content: 'hi', parentInteractionId: null, createdAt: NOW },
+    ];
+    const parsed = { posts: [], interactions: [
+        { actorHandle: '@ada', targetPostId: 'p1', type: 'like', parentInteractionId: 'r1' },
+        { actorHandle: '@ada', targetPostId: 'p1', type: 'like', parentInteractionId: 'r1' },
+        { actorHandle: '@ada', targetPostId: 'p1', type: 'repost', parentInteractionId: 'r1', content: 'this' },
+        { actorHandle: '@bo', targetPostId: 'p1', type: 'like', parentInteractionId: 'r1' },
+        { actorHandle: '@bo', targetPostId: 'p1', type: 'like', parentInteractionId: 'nope' },
+        { actorHandle: '@bo', targetPostId: 'p1', type: 'like' },
+    ], follows: [] };
+    const result = materializeRefresh(parsed, { accounts, posts: existingPosts, interactions: existingInteractions, settings: settings(), newId, now: NOW + 1 });
+    assert.deepEqual(
+        result.interactions.map(i => `${i.type}:${i.actorKey}:${i.parentInteractionId}`),
+        ['like:character:ada.png:r1', 'repost:character:ada.png:r1', 'like:character:bo.png:null'],
+    );
+    assert.equal(result.interactions[1].content, 'this');
+    assert.ok(result.warnings.some(w => /comment nope not found/.test(w)));
+});
+
+test('formatTimeline tallies a like on a comment on the comment, not on the post', () => {
+    const accounts = makeAccounts();
+    const posts = [{ id: 'p1', authorKey: 'character:ada.png', body: 'hello', createdAt: NOW - 1000 }];
+    const interactions = [
+        { id: 'r1', postId: 'p1', type: 'reply', actorKey: 'character:bo.png', content: 'hi', parentInteractionId: null, createdAt: NOW - 900 },
+        { id: 'l1', postId: 'p1', type: 'like', actorKey: 'character:ada.png', content: null, parentInteractionId: 'r1', createdAt: NOW - 800 },
+        { id: 'q1', postId: 'p1', type: 'repost', actorKey: 'character:ada.png', content: 'yes', parentInteractionId: 'r1', createdAt: NOW - 700 },
+    ];
+    const text = formatTimeline(posts, interactions, accounts, { now: NOW });
+    assert.match(text, /postId=p1 @ada likes=0 reposts=0/);
+    assert.match(text, /replyId=r1 @bo \(likes=1 reposts=1\): hi/);
+    assert.match(text, /@ada reposted replyId=r1 with a comment: yes/);
+});
+
+test('rankScore: fresh beats old, buzz and relationships lift, a woken conversation lifts an old post', () => {
+    const now = NOW;
+    const h = hours => now - hours * 3600000;
+    const fresh = rankScore({ createdAt: h(1) }, now);
+    const old = rankScore({ createdAt: h(30) }, now);
+    assert.ok(fresh > old);
+    assert.ok(rankScore({ createdAt: h(30), like: 6, reply: 3 }, now) > old, 'engagement lifts');
+    assert.ok(rankScore({ createdAt: h(30), followed: true }, now) > old, 'following lifts');
+    assert.ok(rankScore({ createdAt: h(30), mentionsMe: true }, now) > rankScore({ createdAt: h(30), followed: true }, now), 'a mention lifts more than a follow');
+    assert.ok(rankScore({ createdAt: h(30), affinity: 3 }, now) > old, 'interacting with the author lifts');
+    assert.ok(rankScore({ createdAt: h(30), latestActivityAt: h(0.5) }, now) > rankScore({ createdAt: h(6) }, now), 'a just-woken conversation outranks a quiet afternoon post');
+    assert.equal(rankScore({ createdAt: h(30), latestActivityAt: h(40) }, now), old, 'activity older than the post is ignored');
+});
+
+test('discountRepeatAuthors leaves each author their best entry and discounts the rest', () => {
+    const entries = [
+        { id: 'a1', author: 'a', score: 10 },
+        { id: 'a2', author: 'a', score: 9 },
+        { id: 'b1', author: 'b', score: 8 },
+        { id: 'a3', author: 'a', score: 7 },
+    ];
+    discountRepeatAuthors(entries, entry => entry.author);
+    assert.deepEqual(entries.map(e => [e.id, Number(e.score.toFixed(2))]), [['a1', 10], ['a2', 7.2], ['b1', 8], ['a3', 4.48]]);
+});
+
+test('mentionsHandle matches whole @handles only', () => {
+    assert.equal(mentionsHandle('hey @me look', 'me'), true);
+    assert.equal(mentionsHandle('@Me at the start', 'me'), true);
+    assert.equal(mentionsHandle('email@me.com is not a mention', 'me'), false);
+    assert.equal(mentionsHandle('@meagain no', 'me'), false);
+    assert.equal(mentionsHandle('anything', ''), false);
+});
+
+test('the profile prompt asks for character-specific handles and rules out the ones given', () => {
+    const accounts = makeAccounts().filter(a => a.key === 'character:ada.png');
+    const plain = buildProfileMessages(accounts);
+    assert.match(plain[0].content, /handle the character would have picked for themselves/);
+    assert.doesNotMatch(plain[1].content, /Handles Already Taken/);
+    const avoiding = buildProfileMessages(accounts, { avoid: ['@ada', 'bo', '', 'ada'] });
+    assert.match(avoiding[1].content, /# Handles Already Taken\nGive every character a handle that is none of these: @ada, @bo\./);
 });
 
 test('a topic refresh asks for posts about the topic and no trends', () => {
