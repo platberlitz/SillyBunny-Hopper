@@ -876,7 +876,11 @@ async function generateBatch(messages, maxTokens, { signal, onProgress, active }
             : [...messages, { role: 'user', content: buildCorrectionMessage(lastError, active.map(a => a.handle)) }];
         const raw = await runGeneration(attemptMessages, maxTokens, signal);
         try {
-            return parseRefreshResponse(raw);
+            const parsed = parseRefreshResponse(raw);
+            if (parsed.salvaged) {
+                onProgress('That came back cut off, keeping the complete part...');
+            }
+            return parsed;
         } catch (error) {
             lastError = error.message;
             if (attempt === 1) {

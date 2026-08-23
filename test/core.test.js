@@ -444,6 +444,31 @@ test('parseJsonObject copes with fences and surrounding prose', () => {
     assert.throws(() => parseJsonObject('no json here'), /not JSON/);
 });
 
+test('a reply cut off by the token cap keeps its complete items and drops the half-written one', () => {
+    const cut = '```json\n{"posts":[{"tempId":"p1","authorHandle":"@a","content":"one"},'
+        + '{"tempId":"p2","authorHandle":"@b","content":"two, with \\"quotes\\" and ] } brackets"}],'
+        + '"interactions":[{"actorHandle":"@a","targetTempId":"p2","type":"like"},'
+        + '{"actorHandle":"@b","targetTempId":"p1","type":"reply","content":"half a';
+    const parsed = parseRefreshResponse(cut);
+    assert.equal(parsed.salvaged, true);
+    assert.equal(parsed.posts.length, 2);
+    assert.equal(parsed.posts[1].content, 'two, with "quotes" and ] } brackets');
+    assert.deepEqual(parsed.interactions.map(item => item.type), ['like']);
+    assert.deepEqual(parsed.follows, []);
+});
+
+test('trailing commas are repaired and a clean reply is not flagged as salvaged', () => {
+    const parsed = parseRefreshResponse('{"posts":[{"tempId":"p1","authorHandle":"@a","content":"x"},],"interactions":[],}');
+    assert.equal(parsed.salvaged, true);
+    assert.equal(parsed.posts.length, 1);
+    assert.equal(parseRefreshResponse('{"posts":[]}').salvaged, false);
+});
+
+test('a reply with no complete item still fails so the retry happens', () => {
+    assert.throws(() => parseRefreshResponse('{"posts":[{"tempId":"p1","authorHandle":"@a","content":"half'), /not JSON/);
+    assert.throws(() => parseRefreshResponse('{"posts":['), /not JSON/);
+});
+
 test('parseRefreshResponse defaults every array', () => {
     const parsed = parseRefreshResponse('{"posts":[{"content":"hi"}]}');
     assert.equal(parsed.posts.length, 1);

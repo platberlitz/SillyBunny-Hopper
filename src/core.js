@@ -838,7 +838,7 @@ export function buildProfileMessages(accounts) {
 }
 
 export function parseProfileResponse(raw, accounts, otherAccounts = []) {
-    const data = parseJsonObject(raw);
+    const { data } = parseJsonObjectOrSalvage(raw);
     const byEntity = new Map(accounts.map(account => [account.entityId, account]));
     // An account's own derived handle must not block its generated one, or the first
     // profile ever written for "Seraphina" comes back as @seraphina2.
@@ -896,14 +896,97 @@ export function parseJsonObject(raw) {
     throw new Error('response was not JSON');
 }
 
+/**
+ * A reply cut off by the token cap, or littered with trailing commas, still holds
+ * usable items. Walk the text from the first brace (string-aware, so brackets inside
+ * post text are ignored), drop commas that sit right before a closing bracket, and if
+ * the object never closes, cut back to the last complete element of a top-level array
+ * and close the brackets. Half-written items are dropped: a post is whole or absent.
+ * Returns null when nothing complete survives, so the caller can retry instead.
+ */
+export function salvageTruncatedJson(raw) {
+    const text = String(raw ?? '');
+    const start = text.indexOf('{');
+    if (start === -1) {
+        return null;
+    }
+    const stack = [];
+    let out = '';
+    let cut = -1;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i += 1) {
+        const ch = text[i];
+        if (inString) {
+            out += ch;
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+        } else if (ch === '{' || ch === '[') {
+            stack.push(ch);
+        } else if (ch === '}' || ch === ']') {
+            if (!stack.length) {
+                break;
+            }
+            stack.pop();
+            if (stack.length === 2 && stack[0] === '{' && stack[1] === '[') {
+                cut = out.length + 1;
+            }
+        } else if (ch === ',' && /^\s*[\]}]/.test(text.slice(i + 1, i + 64))) {
+            continue;
+        }
+        out += ch;
+        if (!stack.length) {
+            break;
+        }
+    }
+    const candidates = stack.length ? [] : [out];
+    if (cut !== -1) {
+        candidates.push(out.slice(0, cut) + ']}');
+    }
+    for (const candidate of candidates) {
+        try {
+            const parsed = JSON.parse(candidate);
+            if (isPlainObject(parsed)) {
+                return parsed;
+            }
+        } catch {
+            // try the next shape
+        }
+    }
+    return null;
+}
+
+/** Strict parse first; a cut-off or comma-littered reply falls back to the complete items in it. */
+function parseJsonObjectOrSalvage(raw) {
+    try {
+        return { data: parseJsonObject(raw), salvaged: false };
+    } catch (error) {
+        const data = salvageTruncatedJson(raw);
+        if (!data) {
+            throw error;
+        }
+        return { data, salvaged: true };
+    }
+}
+
 export function parseRefreshResponse(raw) {
-    const data = parseJsonObject(raw);
+    const { data, salvaged } = parseJsonObjectOrSalvage(raw);
     return {
         posts: Array.isArray(data.posts) ? data.posts : [],
         interactions: Array.isArray(data.interactions) ? data.interactions : [],
         follows: Array.isArray(data.follows) ? data.follows : [],
         strangers: Array.isArray(data.strangers) ? data.strangers : [],
         trends: Array.isArray(data.trends) ? data.trends : [],
+        salvaged,
     };
 }
 
