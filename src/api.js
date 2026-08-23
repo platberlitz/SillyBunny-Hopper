@@ -19,6 +19,7 @@ import {
     selectParticipants,
     MAX_NEW_STRANGERS_PER_REFRESH,
     MAX_POLLS_PER_REFRESH,
+    reasoningOverridesFrom,
 } from './core.js';
 
 // getContext() copies chatId / characterId / chatMetadata by value, so a cached reference
@@ -743,6 +744,21 @@ export function listConnectionProfiles() {
  * skipWIAN only skips World Info and the Author's Note, so the open chat would leak into
  * every post, and its forceChId only works in group chats.
  */
+/** The reasoning settings of the chosen profile's preset, for the fields the profile leaves unset. */
+function reasoningOverrides(service, profileId) {
+    try {
+        const profile = service.getProfile?.(profileId);
+        if (!profile?.preset) {
+            return {};
+        }
+        const preset = ctx().getPresetManager?.('openai')?.getCompletionPresetByName?.(profile.preset);
+        return reasoningOverridesFrom(profile, preset);
+    } catch (error) {
+        console.warn('[Hopper] could not read the reasoning settings of that connection profile', error);
+        return {};
+    }
+}
+
 async function runGeneration(messages, maxTokens, signal) {
     const context = ctx();
     const settings = getSettings();
@@ -755,7 +771,7 @@ async function runGeneration(messages, maxTokens, signal) {
             extractData: true,
             includePreset: false,
             includeInstruct: false,
-        });
+        }, reasoningOverrides(service, settings.profileId));
         return typeof result === 'string' ? result : (result?.content ?? '');
     }
 

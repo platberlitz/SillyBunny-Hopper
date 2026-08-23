@@ -426,6 +426,40 @@ export function isAnswerable(item) {
     return item?.type === 'reply' || (item?.type === 'repost' && Boolean(item?.content));
 }
 
+/**
+ * Reasoning settings live in two places: on the connection profile itself, which the host
+ * forwards, and in the preset that profile points at, which it does not - a refresh does not
+ * apply the preset, because a roleplay preset's stop strings and prompt post-processing would
+ * cut a JSON reply in half. So the reasoning fields are carried across by hand, and only where
+ * the profile is silent: an explicit choice on the profile still wins.
+ */
+export const REASONING_REQUEST_FIELDS = Object.freeze([
+    ['reasoning-effort', 'reasoning_effort'],
+    ['verbosity', 'verbosity'],
+    ['custom-reasoning-preset', 'custom_reasoning_preset'],
+    ['custom-reasoning-param-format', 'custom_reasoning_param_format'],
+    ['custom-reasoning-param-name', 'custom_reasoning_param_name'],
+    ['custom-reasoning-enabled-value', 'custom_reasoning_enabled_value'],
+    ['custom-reasoning-disabled-value', 'custom_reasoning_disabled_value'],
+]);
+
+export function reasoningOverridesFrom(profile, preset) {
+    const overrides = {};
+    if (!isPlainObject(preset)) {
+        return overrides;
+    }
+    for (const [profileKey, requestKey] of REASONING_REQUEST_FIELDS) {
+        if (isPlainObject(profile) && Object.hasOwn(profile, profileKey)) {
+            continue;
+        }
+        const value = preset[requestKey];
+        if (value !== undefined && value !== null && value !== '') {
+            overrides[requestKey] = value;
+        }
+    }
+    return overrides;
+}
+
 export function snapshotOf(account) {
     return {
         key: account.key,

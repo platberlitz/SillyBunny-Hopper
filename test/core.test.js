@@ -41,6 +41,7 @@ import {
     mentionsHandle,
     summarizeRefresh,
     buildSystemPrompt,
+    reasoningOverridesFrom,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -405,6 +406,21 @@ test('scene text stays inert and cannot smuggle macros', () => {
     const message = buildContextMessage({ accounts, active: accounts, persona: null, settings: settings(), now: NOW, scene });
     assert.doesNotMatch(message, /\{\{user\}\}/);
     assert.match(message, /Ada, Bo are living through this/);
+});
+
+test('reasoning settings are carried from the preset, without overruling the profile', () => {
+    const preset = { reasoning_effort: 'high', verbosity: 'low', custom_reasoning_param_name: 'thinking', custom_reasoning_preset: '', temperature: 0.9, stop: ['\n\n'] };
+    assert.deepEqual(
+        reasoningOverridesFrom({ preset: 'Kimi' }, preset),
+        { reasoning_effort: 'high', verbosity: 'low', custom_reasoning_param_name: 'thinking' },
+        'empty values and everything that is not a reasoning field stay out',
+    );
+    assert.deepEqual(
+        reasoningOverridesFrom({ preset: 'Kimi', 'reasoning-effort': 'low' }, preset),
+        { verbosity: 'low', custom_reasoning_param_name: 'thinking' },
+        "the profile's own choice is left for the host to send",
+    );
+    assert.deepEqual(reasoningOverridesFrom({ preset: 'Kimi' }, null), {});
 });
 
 test('a topic refresh asks for posts about the topic and no trends', () => {

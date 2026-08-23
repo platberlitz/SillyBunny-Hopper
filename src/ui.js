@@ -1247,7 +1247,7 @@ function profileView() {
                 el('div', { className: 'sbtw-handle', text: `@${account.handle}` }),
                 account.bio ? el('div', { className: 'sbtw-bio', text: account.bio }) : null,
                 account.location ? el('div', { className: 'sbtw-location' }, [icon('fa-location-dot'), el('span', { text: account.location })]) : null,
-                el('div', { className: 'sbtw-counts', text: `${(follows[account.key] ?? []).length} following  ·  ${followerCount} followers` }),
+                el('div', { className: 'sbtw-counts', text: `${(follows[account.key] ?? []).length} following  ·  ${plural(followerCount, 'follower')}` }),
             ]),
             el('div', { className: 'sbtw-profile-actions' }, [
                 canFollow
@@ -1386,6 +1386,11 @@ function notificationGroups() {
 }
 
 /** Posts and replies wearing a new-dot right now: the same mark, counted for the Home badge. */
+/** "1 follower", not "1 followers". */
+function plural(count, one, many = `${one}s`) {
+    return `${count} ${count === 1 ? one : many}`;
+}
+
 function unseenTimeline() {
     if (!state.feed) {
         return 0;
@@ -2515,7 +2520,7 @@ async function resetTimeline() {
     state.replyingTo = null;
     replyDrafts.clear();
     render();
-    toast(`Timeline reset: ${cleared.posts} posts and ${cleared.reactions} reactions cleared. Profiles, follows and settings kept.`, 'success');
+    toast(`Timeline reset: ${plural(cleared.posts, 'post')} and ${plural(cleared.reactions, 'reaction')} cleared. Profiles, follows and settings kept.`, 'success');
 }
 
 // --- opening --------------------------------------------------------------
