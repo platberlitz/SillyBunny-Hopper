@@ -1825,6 +1825,14 @@ function settingsView() {
         }, [document.createTextNode(settings.tone)]),
         'Only the tone. The rules that keep a refresh parseable are not editable, so you cannot break it from here.'),
 
+        el('h3', { text: 'How much history it reads' }),
+        el('div', { className: 'sbtw-row' }, [
+            field('Hours back', numberInput(settings.history.hours, 1, 720, value => save({ history: { ...settings.history, hours: value } }))),
+            field('Posts', numberInput(settings.history.posts, 1, 100, value => save({ history: { ...settings.history, posts: value } }))),
+            field('Replies per post', numberInput(settings.history.replies, 0, 12, value => save({ history: { ...settings.history, replies: value } }))),
+        ]),
+        el('p', { className: 'sbtw-hint', text: 'What the model is shown of the timeline so far. This is most of every request, and it does not depend on how much a refresh writes - so a long window makes a small refresh just as slow and just as expensive. Raise it for longer memory, lower it for quicker, cheaper refreshes.' }),
+
         el('h3', { text: 'The chat you have open' }),
         checkbox('Let characters react to the roleplay', settings.scene.enabled, value => save({ scene: { ...settings.scene, enabled: value } })),
         el('p', { className: 'sbtw-hint', text: 'Sends the last few messages of the chat you have open to this timeline\'s model, so the characters in that scene can post about their own day. Only they may mention it. Off by default: with it on, chat text leaves the chat and goes wherever the connection above points.' }),

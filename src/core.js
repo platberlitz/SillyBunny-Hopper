@@ -9,8 +9,6 @@ export const KIND_CHARACTER = 'character';
 export const KIND_AMBIENT = 'ambient';
 
 export const RECENT_WINDOW_HOURS = 48;
-export const MAX_TIMELINE_POSTS = 100;
-export const MAX_REPLIES_PER_POST = 12;
 export const POST_MAX_CHARS = 4000;
 export const REPLY_MAX_CHARS = 2000;
 
@@ -62,6 +60,12 @@ export const DEFAULTS = Object.freeze({
     carry: { enabled: false, hours: 48, items: 8, depth: 1 },
     /** Off by default: with it on, the open roleplay chat is sent to the timeline's model. */
     scene: { enabled: false },
+    /**
+     * How much of the timeline is read back to the model each refresh. This is the biggest part
+     * of every request by far, and it is spent on context, not on what the refresh writes: a
+     * generous window makes a small refresh just as slow as a large one.
+     */
+    history: { hours: 24, posts: 30, replies: 4 },
     catchUpHours: 0,
     /** Cap on one reply. Thinking models spend part of it on reasoning, so it is generous by default. */
     maxTokens: 32768,
@@ -214,6 +218,7 @@ export function normalizeSettings(raw) {
     const active = isPlainObject(source.active) ? source.active : {};
     const images = isPlainObject(source.images) ? source.images : {};
     const carry = isPlainObject(source.carry) ? source.carry : {};
+    const history = isPlainObject(source.history) ? source.history : {};
 
     const min = clampInt(active.min, 1, 100, DEFAULTS.active.min);
     const max = clampInt(active.max, 1, 100, DEFAULTS.active.max);
@@ -287,6 +292,11 @@ export function normalizeSettings(raw) {
         incremental: source.incremental === true,
         tone: typeof source.tone === 'string' ? source.tone.slice(0, 8000) : '',
         scene: { enabled: isPlainObject(source.scene) && source.scene.enabled === true },
+        history: {
+            hours: clampInt(history.hours, 1, 720, DEFAULTS.history.hours),
+            posts: clampInt(history.posts, 1, 100, DEFAULTS.history.posts),
+            replies: clampInt(history.replies, 0, 12, DEFAULTS.history.replies),
+        },
         carry: {
             enabled: carry.enabled === true,
             hours: clampInt(carry.hours, 1, 720, DEFAULTS.carry.hours),
@@ -581,7 +591,7 @@ function characterBlock(account) {
  */
 const TIMELINE_CHAR_BUDGET = 48000;
 
-export function formatTimeline(posts, interactions, accounts, { now = Date.now(), windowHours = RECENT_WINDOW_HOURS } = {}) {
+export function formatTimeline(posts, interactions, accounts, { now = Date.now(), windowHours = DEFAULTS.history.hours, maxPosts = DEFAULTS.history.posts, maxReplies = DEFAULTS.history.replies } = {}) {
     const byKey = new Map(accounts.map(account => [account.key, account]));
     const label = (key, snapshot) => {
         const account = byKey.get(key);
@@ -591,7 +601,7 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
     const recent = posts
         .filter(post => post.createdAt >= cutoff)
         .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, MAX_TIMELINE_POSTS);
+        .slice(0, maxPosts);
     if (!recent.length) {
         return 'No recent activity.';
     }
@@ -640,9 +650,9 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
             }).join(' | ');
             lines.push(`poll: ${inertText(post.poll.question)} [${inertText(options)}]`);
         }
-        const replies = (repliesByPost.get(post.id) ?? [])
-            .sort((a, b) => a.createdAt - b.createdAt)
-            .slice(-MAX_REPLIES_PER_POST);
+        // slice(-0) is slice(0), which would hand back every reply instead of none.
+        const kept = (repliesByPost.get(post.id) ?? []).sort((a, b) => a.createdAt - b.createdAt);
+        const replies = maxReplies > 0 ? kept.slice(-maxReplies) : [];
         for (const reply of replies) {
             if (reply.type === 'repost') {
                 const what = reply.parentInteractionId ? `reposted replyId=${reply.parentInteractionId} with a comment` : 'reposted with a comment';
@@ -803,7 +813,7 @@ export function buildContextMessage({ accounts, active, persona, session = null,
     sections.push(
         '# Recent Timeline',
         'Answer, like or repost a comment directly by putting its replyId in parentInteractionId. Spread reactions across the accounts below, not onto one person\'s posts.',
-        formatTimeline(posts, interactions, accounts, { now }),
+        formatTimeline(posts, interactions, accounts, { now, windowHours: settings.history.hours, maxPosts: settings.history.posts, maxReplies: settings.history.replies }),
         '',
         '# Quotas',
         `posts: at most ${settings.quotas.posts}`,

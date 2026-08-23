@@ -423,6 +423,33 @@ test('reasoning settings are carried from the preset, without overruling the pro
     assert.deepEqual(reasoningOverridesFrom({ preset: 'Kimi' }, null), {});
 });
 
+test('the history window is what the prompt reads back, and it is clamped', () => {
+    assert.deepEqual(settings({}).history, { hours: 24, posts: 30, replies: 4 });
+    assert.deepEqual(settings({ history: { hours: 0, posts: 5000, replies: -3 } }).history, { hours: 1, posts: 100, replies: 0 });
+    assert.deepEqual(settings({ history: 'nonsense' }).history, { hours: 24, posts: 30, replies: 4 });
+
+    const accounts = makeAccounts();
+    const posts = [];
+    const interactions = [];
+    for (let index = 0; index < 40; index += 1) {
+        const id = `p${index}`;
+        posts.push({ id, authorKey: 'character:ada.png', body: `post ${index}`, createdAt: NOW - index * 60 * 60 * 1000 });
+        for (let reply = 0; reply < 6; reply += 1) {
+            interactions.push({ id: `${id}r${reply}`, postId: id, type: 'reply', actorKey: 'character:bo.png', content: `reply ${reply}`, parentInteractionId: null, createdAt: NOW - index * 60 * 60 * 1000 + reply });
+        }
+    }
+    const wide = formatTimeline(posts, interactions, accounts, { now: NOW, windowHours: 48, maxPosts: 100, maxReplies: 12 });
+    const narrow = formatTimeline(posts, interactions, accounts, { now: NOW, windowHours: 24, maxPosts: 30, maxReplies: 4 });
+    assert.ok(narrow.length < wide.length / 2, `narrow ${narrow.length} should be far smaller than wide ${wide.length}`);
+    // The cutoff is inclusive, so the post sitting exactly 24 hours back still counts.
+    assert.equal((narrow.match(/^postId=/gm) ?? []).length, 25, 'only the last 24 hours');
+    assert.equal((narrow.match(/^ {2}replyId=/gm) ?? []).length, 25 * 4, 'four replies per post');
+
+    const message = buildContextMessage({ accounts, active: accounts, persona: null, posts, interactions, settings: settings({ history: { hours: 2, posts: 30, replies: 0 } }), now: NOW });
+    assert.equal((message.match(/^postId=/gm) ?? []).length, 3, 'now, an hour back, and the one exactly two hours back');
+    assert.doesNotMatch(message, /^ {2}replyId=/m);
+});
+
 test('a topic refresh asks for posts about the topic and no trends', () => {
     const accounts = makeAccounts();
     const active = accounts.filter(a => a.kind !== KIND_PERSONA);
