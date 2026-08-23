@@ -1161,6 +1161,42 @@ function profileView() {
     ]);
 }
 
+/** Fresh handles, names and bios for every invited character in one request. */
+async function rewriteAllProfiles() {
+    if (state.busy || !state.session) {
+        return;
+    }
+    const sessionId = state.session.id;
+    const { epoch, signal } = freshSignal();
+    state.busy = true;
+    state.status = 'Writing new profiles...';
+    render();
+    try {
+        const written = await api.regenerateAllProfiles(sessionId, { signal });
+        if (!isLive(epoch)) {
+            return;
+        }
+        if (!written) {
+            toast('The model did not return usable profiles. Try again.', 'warning');
+            return;
+        }
+        await refreshAccounts(sessionId);
+        toast(written === 1 ? 'New profile written.' : `${written} new profiles written.`, 'success');
+    } catch (error) {
+        if (signal.aborted) {
+            return;
+        }
+        console.error('[Hopper] profile rewrite failed', error);
+        toast(error?.message || 'The profiles could not be written - check your connection settings.', 'error');
+    } finally {
+        if (isLive(epoch)) {
+            state.busy = false;
+            state.status = '';
+            render();
+        }
+    }
+}
+
 /** A fresh handle, name and bio for a character, written by the posts connection; the old handle is ruled out. */
 async function rewriteProfile(accountKey) {
     if (state.busy || !state.session) {
@@ -1578,6 +1614,12 @@ function settingsView() {
             invites,
             el('span', { className: 'sbtw-hint', text: 'Only invited characters take part in a refresh.' }),
         ]),
+        field('Profiles', el('div', { className: 'sbtw-button-row' }, [
+            button('New profiles for everyone', 'sbtw-btn sbtw-btn-quiet', () => void rewriteAllProfiles(), {
+                iconName: 'fa-wand-magic-sparkles',
+                title: 'Ask the posts connection for a fresh handle, name and bio for every invited character',
+            }),
+        ]), 'One request rewrites the handle, name and bio of every invited character; the current handles are ruled out. One character at a time: New profile on their page.'),
         checkbox('Let strangers join in', session.ambient, value => saveSession({ ambient: value })),
         el('p', { className: 'sbtw-hint', text: `Random passers-by the model invents, not part of the cast. They mostly reply and like, get a profile, and come back later.${session.strangers.length ? ` ${session.strangers.length} so far.` : ''}` }),
         field('Accounts per refresh', activeMode),

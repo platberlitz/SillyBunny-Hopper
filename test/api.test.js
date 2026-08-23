@@ -23,6 +23,7 @@ import {
     writeFeed,
     generatePersonaProfile,
     deleteSession,
+    regenerateAllProfiles,
 } from '../src/api.js';
 import { SETTINGS_KEY } from '../src/core.js';
 
@@ -603,6 +604,24 @@ test('one post at a time: one request per post, each committed and shown as it l
     assert.ok(result2.warnings.some(w => /skipped/.test(w)));
     assert.ok(feed2.posts.length >= 1);
     updateSettings({ incremental: false });
+});
+
+test('regenerateAllProfiles rewrites every invited character in one request, ruling out every current handle', async () => {
+    ensureActiveSession();
+    current.nextResponse = JSON.stringify({ profiles: [
+        { entityId: 'ada.png', name: 'Ada', handle: 'proof_by_tea', bio: 'qed', location: 'the board' },
+        { entityId: 'bo.png', name: 'Bo', handle: 'late_again', bio: 'on my way', location: 'the van' },
+    ] });
+    const written = await regenerateAllProfiles();
+    assert.equal(written, 2);
+    assert.equal(getSettings().profiles['character:ada.png'].handle, 'proof_by_tea');
+    assert.equal(getSettings().profiles['character:bo.png'].handle, 'late_again');
+    const requests = current.calls.filter(([name]) => name === 'generateRaw');
+    assert.equal(requests.length, 1, 'one request for everyone');
+    const taken = (requests[0][1].prompt.match(/# Handles Already Taken\n[^\n]*/) ?? [''])[0];
+    for (const handle of ['@me', '@ada', '@bo']) {
+        assert.ok(taken.includes(handle), `${handle} is ruled out`);
+    }
 });
 
 test('generatePersonaProfile writes the persona profile from the persona description', async () => {

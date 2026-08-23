@@ -820,6 +820,24 @@ export async function regenerateProfile(accountKey, sessionId = ensureActiveSess
     return profile;
 }
 
+/**
+ * Fresh profiles for every invited character of a timeline, in one request. Every current
+ * handle is ruled out, so they all change. Returns how many profiles were written.
+ */
+export async function regenerateAllProfiles(sessionId = ensureActiveSession().id, { signal } = {}) {
+    const accounts = await currentAccounts(sessionId);
+    const characters = accounts.filter(account => account.kind === KIND_CHARACTER);
+    if (!characters.length) {
+        throw new Error('Invite at least one character first.');
+    }
+    const profiles = await generateProfilesFor(characters, accounts, signal, { avoid: accounts.map(account => account.handle) });
+    const written = Object.keys(profiles).length;
+    if (written) {
+        updateSettings({ profiles: { ...getSettings().profiles, ...profiles } });
+    }
+    return written;
+}
+
 export async function generatePostImage(prompt, signal) {
     const context = ctx();
     if (typeof context.executeSlashCommandsWithOptions !== 'function') {

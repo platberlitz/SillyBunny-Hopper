@@ -68,7 +68,7 @@ All under **Settings** inside Hopper. The drawer in the Extensions panel only ho
 
 - **Who posts** - the cast, whether strangers may join, and how many accounts are active per refresh.
 - **Timeline identity** - name, freeform type (what sort of social setting this is), persona and Scenario Notes.
-- **Persona profile** - a timeline-only name, handle, bio and location. **Write it with the model** drafts them from the persona description. Characters get theirs on their first refresh; **New profile** on a character's page asks for a fresh handle, name and bio (the old handle is ruled out).
+- **Persona profile** - a timeline-only name, handle, bio and location. **Write it with the model** drafts them from the persona description. Characters get theirs on their first refresh; **New profile** on a character's page asks for a fresh handle, name and bio (the old handle is ruled out), and **New profiles for everyone** under Who posts does every invited character in one request.
 - **Connection** - which connection profile writes the posts; unset, the current one. A cheap model is fine.
 - **How much each refresh makes** - caps for posts, replies, reposts and likes (defaults 8, 12, 4 and 18).
 - **One post at a time** - one request per post. Slower overall, but the first post shows up in seconds.
