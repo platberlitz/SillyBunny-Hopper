@@ -10,9 +10,11 @@ A pretend social timeline for a SillyBunny cast: persona-scoped sessions with th
 | --- | --- |
 | ![A stranger's profile with bio, follow counts and the posts they liked](screenshots/profile.png) | ![The Who posts section: invited characters, the strangers switch and accounts per refresh](screenshots/settings.png) |
 
-| Typing @ in the composer | On a phone |
+| Trending, with made-up topics | Typing @ in the composer |
 | --- | --- |
-| ![The mention picker listing known accounts under the composer](screenshots/mentions.png) | <img src="screenshots/mobile.png" alt="Hopper on a phone" width="300"> |
+| ![The Trending tab: a bar of invented trending topics above the most engaged posts](screenshots/trending.png) | ![The mention picker listing known accounts under the composer](screenshots/mentions.png) |
+
+<img src="screenshots/mobile.png" alt="Hopper on a phone" width="300">
 
 Everything here is fiction. Nothing is posted anywhere real, and no account belongs to a person who exists. One caveat worth stating plainly: **Refresh** sends the characters' profiles and the recent timeline to whichever model connection is configured, local or remote. Anything that should not reach that API should not be on the timeline.
 
@@ -27,7 +29,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 - Posting by hand, with one picture from disk and a poll of two to four options; **Refresh** lives in the same button row.
 - Like, repost and reply on every post; reply to a specific comment; delete your own replies and posts.
 - `@` in a composer lists the accounts the session knows (persona, invited characters, strangers); arrows move, Enter or Tab inserts the handle.
-- **Main** is everything; **Following** is the accounts the persona follows, their posts and reposts with an attribution line; **Trending** is the most talked-about posts of the last two days, most engaged first. A search box filters the current timeline by text, author, handle, poll text or reply text.
+- **Main** is everything; **Following** is the accounts the persona follows, their posts and reposts with an attribution line; **Trending** is the most talked-about posts of the last two days, most engaged first, under a bar of trending topics the model makes up for the setting each refresh (tap one to search for it). A search box filters the current timeline by text, author, handle, poll text or reply text.
 - Tap a like or repost count to see who did it, with a link to each profile.
 - Profiles with Posts, Reposts, Likes and Media sections, and follow/unfollow from any profile.
 - Optional **carryover**: recent activity dropped into a chat's prompt, so a character can refer to the argument they had on the timeline this morning. Off by default.

@@ -17,6 +17,7 @@ import {
     mentionQueryAt,
     RECENT_WINDOW_HOURS,
     engagementScore,
+    formatCount,
 } from './core.js';
 import * as api from './api.js';
 
@@ -840,8 +841,25 @@ function timelineView() {
     });
     drawResults();
 
+    // Made-up trending topics, under the Trending tab: tapping one searches the timeline for it.
+    let trendsBar = null;
+    if (state.tab === 'trending') {
+        const trends = state.session?.trends ?? [];
+        trendsBar = el('div', { className: 'sbtw-trends', attrs: { role: 'list', 'aria-label': 'Trending topics' } }, trends.length
+            ? trends.map(trend => el('button', {
+                className: 'sbtw-trend',
+                attrs: { type: 'button', role: 'listitem', title: `Search for ${trend.topic}` },
+                on: { click: () => { search.value = trend.topic; state.timelineSearch = trend.topic; drawResults(); } },
+            }, [
+                el('span', { className: 'sbtw-trend-topic', text: trend.topic }),
+                el('span', { className: 'sbtw-trend-count', text: `${formatCount(trend.posts)} posts` }),
+            ]))
+            : [el('span', { className: 'sbtw-hint', text: 'Trending topics appear after the next Refresh.' })]);
+    }
+
     return el('div', {}, [
         tabs,
+        trendsBar,
         el('div', { className: 'sbtw-timeline-search-row' }, [search, resultStatus]),
         composer(),
         results,

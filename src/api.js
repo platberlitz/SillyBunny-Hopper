@@ -827,6 +827,7 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         now: Date.now(),
         localTime: new Date().toLocaleString(),
         strangers: session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
+        trends: true,
     });
     const parsed = await generateBatch(messages, REFRESH_MAX_TOKENS, batch, { throwOnFailure: true });
     const result = materializeRefresh(parsed, {
@@ -910,6 +911,11 @@ async function commitBatch(result, { sessionId, feed, signal, onProgress, onPart
         updateSession(sessionId, { strangers: [...(freshSession?.strangers ?? []), ...result.strangers] });
     }
 
+    if (result.trends?.length) {
+        // Made-up trending topics: the newest set replaces the last one.
+        updateSession(sessionId, { trends: result.trends });
+    }
+
     if (result.follows.length) {
         // Merge into the freshest settings so a follow made manually while the model was
         // thinking is not overwritten by this refresh's snapshot.
@@ -936,7 +942,7 @@ async function runIncrementalRefresh(batch) {
     const remaining = { replies: quotas.replies, reposts: quotas.reposts, likes: quotas.likes };
     let strangersLeft = session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0;
     const cast = active.filter(account => account.kind === KIND_CHARACTER);
-    const all = { posts: [], interactions: [], follows: [], strangers: [], warnings: [] };
+    const all = { posts: [], interactions: [], follows: [], strangers: [], trends: [], warnings: [] };
     let emptyTurns = 0;
     let liveAccounts = accounts;
 
@@ -960,6 +966,8 @@ async function runIncrementalRefresh(batch) {
             localTime: new Date().toLocaleString(),
             strangers: strangersLeft,
             turn: { index, total, author, remaining },
+            // One set of made-up trends per refresh is plenty; the first turn writes them.
+            trends: index === 1,
         });
         const parsed = await generateBatch(messages, TURN_MAX_TOKENS, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
         if (!parsed) {
@@ -981,7 +989,7 @@ async function runIncrementalRefresh(batch) {
             strangerLimit: strangersLeft,
         });
         await commitBatch(result, batch);
-        for (const key of ['posts', 'interactions', 'follows', 'strangers', 'warnings']) {
+        for (const key of ['posts', 'interactions', 'follows', 'strangers', 'trends', 'warnings']) {
             all[key].push(...result[key]);
         }
         for (const item of result.interactions) {

@@ -526,6 +526,19 @@ test('a refresh stores posts and interactions and stamps lastRefreshAt', async (
     assert.ok(getSession(ensureActiveSession().id).lastRefreshAt > 0);
 });
 
+test('made-up trends from a refresh replace the session trends', async () => {
+    updateSettings({ profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+    current.nextResponse = JSON.stringify({ posts: [], interactions: [], follows: [], trends: [{ topic: '#TideWatch', posts: 1200 }, { topic: 'harbour market', posts: 80 }] });
+    await runRefresh({ feed: emptyFeed() });
+    assert.deepEqual(getSession(ensureActiveSession().id).trends.map(t => t.topic), ['#TideWatch', 'harbour market']);
+    current.nextResponse = JSON.stringify({ posts: [], interactions: [], follows: [], trends: [{ topic: '#Fog', posts: 3 }] });
+    await runRefresh({ feed: emptyFeed() });
+    assert.deepEqual(getSession(ensureActiveSession().id).trends.map(t => t.topic), ['#Fog']);
+    current.nextResponse = GOOD_BATCH;
+    await runRefresh({ feed: emptyFeed() });
+    assert.deepEqual(getSession(ensureActiveSession().id).trends.map(t => t.topic), ['#Fog'], 'a refresh without trends keeps the last set');
+});
+
 test('one post at a time: one request per post, each committed and shown as it lands', async () => {
     updateSettings({ incremental: true, quotas: { posts: 3, replies: 6, reposts: 2, likes: 9 }, profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
     const feed = emptyFeed();

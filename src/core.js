@@ -146,7 +146,50 @@ export function normalizeSession(raw, id = '') {
         follows: normalizeFollows(source.follows),
         lastRefreshAt: clampInt(source.lastRefreshAt, 0, Number.MAX_SAFE_INTEGER, 0),
         feedPath: typeof source.feedPath === 'string' ? source.feedPath : '',
+        trends: normalizeTrends(source.trends),
     };
+}
+
+export const MAX_TRENDS = 8;
+
+/** Made-up trending topics: short text plus an invented post count, newest set wins. */
+export function normalizeTrends(value, { now = Date.now() } = {}) {
+    const seen = new Set();
+    const out = [];
+    for (const item of Array.isArray(value) ? value : []) {
+        const source = isPlainObject(item) ? item : { topic: item };
+        const topic = String(source.topic ?? '').replace(/\s+/g, ' ').trim().slice(0, 40);
+        if (!topic) {
+            continue;
+        }
+        const key = topic.toLowerCase();
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        const count = Number(source.posts);
+        out.push({
+            topic,
+            posts: Number.isFinite(count) && count >= 0 ? Math.round(count) : 0,
+            createdAt: clampInt(source.createdAt, 0, Number.MAX_SAFE_INTEGER, now),
+        });
+        if (out.length >= MAX_TRENDS) {
+            break;
+        }
+    }
+    return out;
+}
+
+/** "1.2K" style counts for the trends bar. */
+export function formatCount(value) {
+    const number = Math.max(0, Math.round(Number(value) || 0));
+    if (number >= 1000000) {
+        return `${(number / 1000000).toFixed(number >= 10000000 ? 0 : 1).replace(/\.0$/, '')}M`;
+    }
+    if (number >= 1000) {
+        return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1).replace(/\.0$/, '')}K`;
+    }
+    return String(number);
 }
 
 /**
@@ -582,7 +625,7 @@ export function matchesTimelineQuery(post, interactions, query) {
     return values.some(value => searchableText(value).includes(needle));
 }
 
-export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '', strangers = 0 } = {}) {
+export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '', strangers = 0, trends = false } = {}) {
     const activeKeys = new Set(active.map(account => account.key));
     const roster = accounts
         .map((account) => {
@@ -643,6 +686,14 @@ export function buildContextMessage({ accounts, active, persona, session = null,
     }
 
     sections.push(
+        '# Trending Topics',
+        trends
+            ? 'Also return 4 to 6 "trends": short made-up hashtags or phrases that would be trending on this site right now, fitting the setting and the recent posts, each with a plausible invented post count. They are colour for the Trending tab, not a summary of real posts, so invent freely; keep each under 40 characters.'
+            : 'Leave "trends" empty this time.',
+        '',
+    );
+
+    sections.push(
         '# Recent Timeline',
         'Replies to the persona are especially worth answering. Use a comment\'s replyId as parentInteractionId to answer it directly.',
         formatTimeline(posts, interactions, accounts, { now }),
@@ -690,6 +741,10 @@ const OUTPUT_SHAPE = {
         handle: 'new handle without @: lowercase letters, digits, underscores',
         bio: 'one-line bio',
     }],
+    trends: [{
+        topic: 'short hashtag or phrase, only when the Trending Topics section asks for them',
+        posts: 1200,
+    }],
 };
 
 export function buildFormatMessage() {
@@ -710,10 +765,10 @@ export function buildTurnInstruction({ index = 1, total = 1, author = null, rema
     ].join('\n');
 }
 
-export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0, turn = null }) {
+export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0, turn = null, trends = false }) {
     return [
         { role: 'system', content: buildSystemPrompt(settings) },
-        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers }) },
+        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers, trends }) },
         ...(turn ? [{ role: 'user', content: buildTurnInstruction(turn) }] : []),
         { role: 'user', content: buildFormatMessage() },
     ];
@@ -837,6 +892,7 @@ export function parseRefreshResponse(raw) {
         interactions: Array.isArray(data.interactions) ? data.interactions : [],
         follows: Array.isArray(data.follows) ? data.follows : [],
         strangers: Array.isArray(data.strangers) ? data.strangers : [],
+        trends: Array.isArray(data.trends) ? data.trends : [],
     };
 }
 
@@ -1132,7 +1188,7 @@ export function materializeRefresh(parsed, {
         outFollows.push({ actorKey: actor.key, targetKey: target.key });
     }
 
-    return { posts: outPosts, interactions: outInteractions, follows: outFollows, strangers: outStrangers, warnings };
+    return { posts: outPosts, interactions: outInteractions, follows: outFollows, strangers: outStrangers, trends: normalizeTrends(parsed.trends, { now }), warnings };
 }
 
 // --- carryover ------------------------------------------------------------

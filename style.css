@@ -1109,3 +1109,46 @@ body.reduced-motion .sbtw-action-on {
     margin-right: 2px;
 }
 
+/* --- trending topics bar --------------------------------------------------- */
+
+.sbtw-trends {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.6rem var(--sbtw-gap);
+    overflow-x: auto;
+    scrollbar-width: thin;
+    border-bottom: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-trend {
+    flex: 0 0 auto;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    min-height: 0;
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--sbtw-divider);
+    border-radius: var(--sb-radius-button, 14px);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: 1.25;
+    cursor: pointer;
+    text-align: left;
+}
+
+.sbtw-trend:hover,
+.sbtw-trend:focus-visible {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, transparent);
+}
+
+.sbtw-trend-topic {
+    font-weight: 700;
+}
+
+.sbtw-trend-count {
+    font-size: 0.8em;
+    color: var(--sbtw-muted);
+}
+

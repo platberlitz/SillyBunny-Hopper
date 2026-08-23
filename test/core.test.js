@@ -32,6 +32,8 @@ import {
     normalizeSession,
     buildTurnInstruction,
     engagementScore,
+    normalizeTrends,
+    formatCount,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -117,7 +119,7 @@ test('v1 settings migrate wholesale into one legacy timeline session', () => {
         personaProfile: { name: '', handle: '', bio: '', location: '' },
         follows: { 'persona:me.png': ['character:ada.png'] },
         lastRefreshAt: 123,
-        feedPath: '/user/files/twitterlike-feed.json',
+        feedPath: '/user/files/twitterlike-feed.json', trends: [],
     });
 });
 
@@ -844,5 +846,14 @@ test('engagementScore weighs replies and reposts twice a like', () => {
     assert.equal(engagementScore({ like: 3, reply: 2, repost: 1, vote: 1 }), 10);
     assert.equal(engagementScore({}), 0);
     assert.equal(engagementScore({ like: 'x' }), 0);
+});
+
+test('trends are normalised, deduped, capped at eight, and formatted as counts', () => {
+    const list = normalizeTrends([{ topic: '#TideWatch', posts: 1234 }, { topic: ' #tidewatch ', posts: 5 }, { topic: 'harbour market', posts: 'lots' }, 'bare string', { topic: '' }], { now: 7 });
+    assert.deepEqual(list.map(t => `${t.topic}|${t.posts}|${t.createdAt}`), ['#TideWatch|1234|7', 'harbour market|0|7', 'bare string|0|7']);
+    assert.equal(normalizeTrends(Array.from({ length: 12 }, (_, i) => ({ topic: `t${i}`, posts: i }))).length, 8);
+    assert.deepEqual([formatCount(0), formatCount(999), formatCount(1234), formatCount(12345), formatCount(2500000)], ['0', '999', '1.2K', '12K', '2.5M']);
+    assert.deepEqual(parseRefreshResponse('{"posts":[],"trends":[{"topic":"x","posts":3}]}').trends, [{ topic: 'x', posts: 3 }]);
+    assert.deepEqual(normalizeSession({ trends: [{ topic: 'kept', posts: 2 }] }).trends.map(t => t.topic), ['kept']);
 });
 
