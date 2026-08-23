@@ -93,6 +93,10 @@
 
 #sheld[data-sbtw-mode='on'] > :not(.sbtw-shell) {
     display: none !important;
+    /* Belt and braces: a reskin that forces the composer's display with a heavier selector
+       (Terminal UI's Terminal Home did) still leaves it unseen and untouchable. */
+    visibility: hidden !important;
+    pointer-events: none !important;
 }
 
 /* Companion Agents is a body sibling, not part of the chat workspace. */
