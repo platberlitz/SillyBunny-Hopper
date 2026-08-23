@@ -382,6 +382,13 @@ test('the roster marks only active accounts as allowed authors', () => {
     assert.match(message, /@me.*reference-target-only/);
 });
 
+test('the roster carries every account bio, so characters see each other even when inactive', () => {
+    const accounts = makeAccounts().map(a => a.key === 'character:bo.png' ? { ...a, bio: 'Courier. Always late, never sorry.' } : a);
+    const active = accounts.filter(a => a.key === 'character:ada.png');
+    const message = buildContextMessage({ accounts, active, persona: null, settings: settings(), now: NOW });
+    assert.match(message, /@bo.*reference-target-only.*Courier\. Always late, never sorry\./);
+});
+
 test('only active characters get a full card in the prompt', () => {
     const accounts = makeAccounts();
     const active = accounts.filter(a => a.key === 'character:ada.png');

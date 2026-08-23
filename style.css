@@ -599,6 +599,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     background: var(--sbtw-hover);
 }
 
+.sbtw-avatar-xs { width: 1.25rem; height: 1.25rem; }
 .sbtw-avatar-sm { width: 2rem; height: 2rem; }
 .sbtw-avatar-md { width: 2.75rem; height: 2.75rem; }
 .sbtw-avatar-lg { width: 4.5rem; height: 4.5rem; }
@@ -612,6 +613,10 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     color: var(--sbtw-text);
     background: var(--sbtw-active-bg);
     border: 1px solid var(--sbtw-active-border);
+}
+
+.sbtw-avatar-xs.sbtw-avatar-initials {
+    font-size: 0.55em;
 }
 
 /* --- actions ------------------------------------------------------------ */
@@ -854,6 +859,27 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 .sbtw-poll-share {
     margin-left: auto;
     font-variant-numeric: tabular-nums;
+}
+
+.sbtw-poll-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* Who voted for this option: an overlapping pile of small avatars, named by the tooltip. */
+.sbtw-poll-voters {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+
+.sbtw-poll-voters .sbtw-avatar {
+    box-shadow: 0 0 0 1.5px var(--sbtw-surface);
+}
+
+.sbtw-poll-voters .sbtw-avatar + .sbtw-avatar {
+    margin-left: -0.4rem;
 }
 
 .sbtw-poll-mine {

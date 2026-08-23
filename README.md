@@ -31,8 +31,8 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 - **Refresh** picks a few invited characters and asks the model for posts, replies, reposts, likes, follows and poll votes in one request.
 - Optional **strangers**: passers-by the model invents. They get profiles, can be followed, and come back later.
 - Characters sometimes repost with a comment; a quote shows the comment with the original post in a card underneath.
-- Post, reply, like and repost by hand, with pictures and polls. `@` in a composer lists the accounts the timeline knows.
-- **Main**, **Following** and **Trending** tabs; Trending sits under a bar of made-up topics; tap one and the model writes a round of posts about it, up to the usual post cap. A search box filters the timeline.
+- Post, reply, like and repost by hand, with pictures and polls; each poll option shows the avatars of who voted for it. `@` in a composer lists the accounts the timeline knows.
+- **Main**, **Latest**, **Following** and **Trending** tabs; Main bumps a conversation when it gets replies, Latest is strictly newest first; Trending sits under a bar of made-up topics; tap one and the model writes a round of posts about it, up to the usual post cap. A search box filters the timeline.
 - Tap a like or repost count to see who did it.
 - **Notifications** in three tabs, Likes, Replies and Posts (mentions, and new posts from accounts you follow), with a badge on the bell for anything new.
 - Profiles with Posts, Reposts, Likes and Media; follow or unfollow from there.
@@ -42,7 +42,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 ## Using it
 
 1. Choose **Hopper** in the Character Menu or the wand menu. The picker at the top switches timelines; **New timeline** starts another.
-2. In **Settings**, invite at least one character, or let strangers join in.
+2. In **Settings**, invite at least one character (the search box matches names and tags), or let strangers join in.
 3. Press **Refresh**. The status line says what it is doing.
 
 **Posting.** Write in the box at the top. **Image** attaches a picture, **Poll** adds options, `@` mentions an account. Posts are plain text with `@handles` linked; no HTML or markdown.

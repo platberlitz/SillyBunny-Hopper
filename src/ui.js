@@ -243,15 +243,16 @@ function visibleTimelineEntries(query = state.timelineSearch) {
         return {
             post,
             repost,
-            sortAt: Math.max(activityAt(post), repost?.createdAt ?? 0),
+            // Latest is strictly newest first; everywhere else a reply bumps the conversation.
+            sortAt: state.tab === 'latest' ? post.createdAt : Math.max(activityAt(post), repost?.createdAt ?? 0),
         };
     }).filter(({ post, repost }) => state.tab !== 'following'
         || post.authorKey === me?.key
         || following.has(post.authorKey)
         || repost);
 
-    // A repost with a comment is a quote: it gets its own entry in Main, as on the real thing.
-    if (state.tab === 'main') {
+    // A repost with a comment is a quote: it gets its own entry in Main and Latest, as on the real thing.
+    if (state.tab === 'main' || state.tab === 'latest') {
         const byId = new Map(state.feed.posts.map(post => [post.id, post]));
         for (const item of state.feed.interactions) {
             if (item.type === 'repost' && item.content && byId.has(item.postId)) {
@@ -335,6 +336,19 @@ function bodyNode(text) {
     return fragment;
 }
 
+/** Who picked this option: a pile of small avatars, named by the tooltip and for screen readers. */
+function pollVotersNode(voters) {
+    if (!voters.length) {
+        return null;
+    }
+    const names = voters.map(vote => `${nameFor(vote.actorKey, vote.actorSnapshot)} (@${handleFor(vote.actorKey, vote.actorSnapshot)})`);
+    const label = `Voted by ${names.join(', ')}`;
+    return el('span', {
+        className: 'sbtw-poll-voters',
+        attrs: { role: 'img', 'aria-label': label, title: label },
+    }, voters.map(vote => avatarNode(accountFor(vote.actorKey) ?? vote.actorSnapshot ?? null, 'xs')));
+}
+
 function pollNode(post) {
     if (!post.poll) {
         return null;
@@ -343,7 +357,8 @@ function pollNode(post) {
     const mine = myInteraction(post.id, 'vote');
     const total = votes.length;
     const rows = post.poll.options.map((option, index) => {
-        const count = votes.filter(vote => vote.pollOptionIndex === index).length;
+        const voters = votes.filter(vote => vote.pollOptionIndex === index);
+        const count = voters.length;
         const share = total ? Math.round((count / total) * 100) : 0;
         const selected = mine?.pollOptionIndex === index;
         const bar = el('span', { className: 'sbtw-poll-bar' });
@@ -355,6 +370,7 @@ function pollNode(post) {
         }, [
             bar,
             el('span', { className: 'sbtw-poll-text', text: option.text }),
+            pollVotersNode(voters),
             el('span', { className: 'sbtw-poll-share', text: total ? `${share}%` : '' }),
         ]);
         return row;
@@ -828,6 +844,7 @@ function timelineView() {
     // tabpanels we do not have, and mislabelled tabs are worse than honest buttons.
     const tabs = el('div', { className: 'sbtw-tabs' }, [
         tabButton('Main', 'main'),
+        tabButton('Latest', 'latest'),
         tabButton('Following', 'following'),
         tabButton('Trending', 'trending'),
     ]);
@@ -1151,7 +1168,7 @@ function settingsView() {
             change: (event) => {
                 const group = groups.find(item => String(item.id) === event.target.value);
                 if (group) {
-                    saveSession({ invited: [...new Set(group.members)] });
+                    setInvited(group.members);
                 }
             },
         },
@@ -1171,6 +1188,25 @@ function settingsView() {
         })),
     ]);
 
+    // Invites change in place. A full re-render would rebuild the scroller under the
+    // finger, dropping the reader's place and the focused checkbox; nothing else on this
+    // view depends on the invite list, and the account roster refreshes quietly behind it.
+    const setInvited = (next) => {
+        const updated = api.updateSession(session.id, { invited: [...new Set(next)] });
+        if (state.session?.id === session.id) {
+            state.session = updated;
+        }
+        for (const row of inviteRows) {
+            row.querySelector('input').checked = updated.invited.includes(row.dataset.avatar);
+        }
+        filterInvites();
+        void refreshAccounts(session.id).catch((error) => {
+            console.error('[Hopper] settings could not refresh the account list', error);
+            toast('The account list could not be refreshed.', 'error');
+        });
+    };
+    const tagNames = new Map((context.tags ?? []).map(tag => [tag.id, tag.name]));
+    const tagsOf = avatar => (context.tagMap?.[avatar] ?? []).map(id => tagNames.get(id)).filter(Boolean);
     const inviteRows = characters.filter(character => character?.avatar).map((character) => {
         const name = character.name || character.data?.name || character.avatar;
         const row = checkbox(
@@ -1178,15 +1214,13 @@ function settingsView() {
             session.invited.includes(character.avatar),
             (checked) => {
                 const invited = api.getSession(session.id).invited;
-                const next = checked
-                    ? [...new Set([...invited, character.avatar])]
-                    : invited.filter(item => item !== character.avatar);
-                saveSession({ invited: next });
+                setInvited(checked ? [...invited, character.avatar] : invited.filter(item => item !== character.avatar));
             },
             avatarNode({ kind: KIND_CHARACTER, entityId: character.avatar, name }, 'sm'),
         );
         row.classList.add('sbtw-invite');
-        row.dataset.search = [name, character.avatar].join(' ').toLocaleLowerCase();
+        row.dataset.avatar = character.avatar;
+        row.dataset.search = [name, character.avatar, ...tagsOf(character.avatar)].join(' ').toLocaleLowerCase();
         return row;
     });
     const inviteCount = el('span', { className: 'sbtw-invite-count' });
@@ -1197,9 +1231,9 @@ function settingsView() {
         attrs: {
             type: 'search',
             value: state.characterSearch,
-            placeholder: 'Search characters',
+            placeholder: 'Search characters or tags',
             autocomplete: 'off',
-            'aria-label': 'Search characters',
+            'aria-label': 'Search characters or tags',
         },
     });
     const filterInvites = () => {
@@ -1214,7 +1248,7 @@ function settingsView() {
         }
         inviteEmpty.hidden = visible > 0;
         inviteEmpty.textContent = query ? 'No characters match this search.' : 'No characters are available.';
-        inviteCount.textContent = query ? `${visible} of ${inviteRows.length}` : `${session.invited.length} invited`;
+        inviteCount.textContent = query ? `${visible} of ${inviteRows.length}` : `${(api.getSession(session.id) ?? session).invited.length} invited`;
     };
     let searchTimer = null;
     inviteSearch.addEventListener('input', () => {

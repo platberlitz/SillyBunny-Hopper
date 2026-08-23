@@ -641,6 +641,7 @@ export function buildContextMessage({ accounts, active, persona, session = null,
                 handle: `@${account.handle}`,
                 kind: account.kind,
                 role,
+                bio: account.bio || undefined,
             }))}`;
         })
         .join('\n');
