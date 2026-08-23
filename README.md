@@ -82,7 +82,7 @@ All under **Settings** inside Hopper. The drawer in the Extensions panel only ho
 
 ## Install
 
-Use SillyBunny's extension installer with `https://github.com/platberlitz/SillyBunny-Hopper`, or clone it into `data/<user>/extensions/`. No server plugin, no build step, no dependencies.
+Use SillyBunny's extension installer with `https://github.com/platberlitz/SillyBunny-Hopper`, or clone it into `data/<user>/extensions/`.
 
 ## Development
 
