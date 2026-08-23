@@ -23,6 +23,7 @@ import {
     rankScore,
     discountRepeatAuthors,
     mentionsHandle,
+    summarizeRefresh,
 } from './core.js';
 import * as api from './api.js';
 
@@ -1807,6 +1808,7 @@ function createTimeline() {
             }
             state.view = 'settings';
             render();
+            toast(`New timeline "${state.session?.name ?? 'Timeline'}" - invite characters, then refresh.`, 'info');
             return true;
         } catch (error) {
             if (transition !== transitionEpoch) {
@@ -2293,10 +2295,11 @@ async function refresh({ topic = '' } = {}) {
         state.status = '';
         if (result.warnings.length) {
             console.warn('[Hopper] refresh warnings', result.warnings);
-            toast(`Kept what made sense. ${result.warnings.length} item(s) were dropped - see the console.`, 'info');
         }
         if (!result.posts.length && !result.interactions.length) {
-            toast('The model returned nothing usable this time.', 'warning');
+            toast(`The model returned nothing usable this time.${result.warnings.length ? ` ${result.warnings.length} note(s) in the console.` : ''}`, 'warning');
+        } else {
+            toast(summarizeRefresh(result, { accounts: state.accounts, topic }), 'success');
         }
     } catch (error) {
         if (!isLive(epoch)) {
@@ -2331,6 +2334,7 @@ async function resetTimeline() {
     if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed || state.busy) {
         return;
     }
+    const cleared = { posts: feed.posts.length, reactions: feed.interactions.length };
     // Kill any generation still running against this timeline before wiping it.
     invalidateWork();
     state.busy = true;
@@ -2354,6 +2358,7 @@ async function resetTimeline() {
     state.replyingTo = null;
     replyDrafts.clear();
     render();
+    toast(`Timeline reset: ${cleared.posts} posts and ${cleared.reactions} reactions cleared. Profiles, follows and settings kept.`, 'success');
 }
 
 // --- opening --------------------------------------------------------------
@@ -2567,6 +2572,9 @@ async function startFeed() {
     } else {
         render();
         if (needsCatchUp(api.getSettings(), Date.now(), state.session)) {
+            const last = state.session?.lastRefreshAt ?? 0;
+            const hours = Math.round((Date.now() - last) / 3600000);
+            toast(last ? `Catching up: it has been ${hours} hours since the last refresh.` : 'Catching up with a first refresh.', 'info');
             void refresh();
         }
         return true;

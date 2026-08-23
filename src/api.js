@@ -884,10 +884,12 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
     // Only the selected cast gets a profile, so an install with 200 characters does not
     // send 200 cards on the first refresh.
     const needProfiles = active.filter(account => account.kind === KIND_CHARACTER && !account.hasProfile);
+    let profilesWritten = 0;
     if (needProfiles.length) {
         onProgress('Writing profiles...');
         const profiles = await generateProfilesFor(needProfiles, accounts, signal);
-        if (Object.keys(profiles).length) {
+        profilesWritten = Object.keys(profiles).length;
+        if (profilesWritten) {
             // Fresh read: the user may have edited profiles while generation was running.
             updateSettings({ profiles: { ...getSettings().profiles, ...profiles } });
         }
@@ -908,7 +910,9 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
     };
 
     if (current.incremental) {
-        return runIncrementalRefresh(batch);
+        const result = await runIncrementalRefresh(batch);
+        result.profilesWritten = profilesWritten;
+        return result;
     }
 
     onProgress(topic ? `Writing posts about ${topic}...` : 'Writing posts...');
@@ -942,6 +946,7 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
     });
     await commitBatch(result, batch);
     updateSession(sessionId, { lastRefreshAt: Date.now() });
+    result.profilesWritten = profilesWritten;
     return result;
 }
 
@@ -987,6 +992,9 @@ async function commitBatch(result, { sessionId, feed, signal, onProgress, onPart
             const url = await generatePostImage(post.image.prompt, signal);
             // A failed image publishes a clean text-only post rather than exposing the prompt.
             post.image = url ? { url, prompt: post.image.prompt } : null;
+            if (!url) {
+                result.warnings.push(`image: could not be drawn for @${post.authorSnapshot?.handle ?? 'someone'}, posted as text`);
+            }
         }
     }
 

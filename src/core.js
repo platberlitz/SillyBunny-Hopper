@@ -1059,6 +1059,9 @@ export function materializeRefresh(parsed, {
     strangerLimit = 0,
 } = {}) {
     const warnings = [];
+    if (parsed?.salvaged) {
+        warnings.push('the reply was cut off by the token cap; kept the complete part');
+    }
     const byHandle = handleIndex(accounts);
     const actorKeys = allowedActorKeys ? new Set(allowedActorKeys) : null;
 
@@ -1522,6 +1525,51 @@ export function discountRepeatAuthors(entries, authorOf, factor = 0.8) {
         seen.set(author, count + 1);
     }
     return entries;
+}
+
+/** One line for the toast after a refresh: what arrived, from whom, and how many notes the console holds. */
+export function summarizeRefresh(result, { accounts = [], topic = '' } = {}) {
+    const byKey = new Map(accounts.map(account => [account.key, account]));
+    const nameOf = (key, snapshot) => byKey.get(key)?.name ?? snapshot?.name ?? 'someone';
+    const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+    const counts = { reply: 0, like: 0, repost: 0, vote: 0 };
+    for (const item of result?.interactions ?? []) {
+        if (Object.hasOwn(counts, item.type)) {
+            counts[item.type] += 1;
+        }
+    }
+    const parts = [];
+    const posts = result?.posts ?? [];
+    if (posts.length) {
+        const names = [...new Set(posts.map(post => nameOf(post.authorKey, post.authorSnapshot)))];
+        const shown = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '');
+        parts.push(`${plural(posts.length, 'post')} from ${shown}`);
+    }
+    if (counts.reply) {
+        parts.push(plural(counts.reply, 'reply', 'replies'));
+    }
+    if (counts.like) {
+        parts.push(plural(counts.like, 'like'));
+    }
+    if (counts.repost) {
+        parts.push(plural(counts.repost, 'repost'));
+    }
+    if (counts.vote) {
+        parts.push(plural(counts.vote, 'poll vote'));
+    }
+    if (result?.follows?.length) {
+        parts.push(plural(result.follows.length, 'new follow'));
+    }
+    if (result?.strangers?.length) {
+        parts.push(`${plural(result.strangers.length, 'stranger')} joined`);
+    }
+    if (result?.profilesWritten) {
+        parts.push(plural(result.profilesWritten, 'profile') + ' written');
+    }
+    if (result?.warnings?.length) {
+        parts.push(`${plural(result.warnings.length, 'note')} in the console`);
+    }
+    return `${topic ? `About ${topic}: ` : ''}${parts.length ? parts.join(' · ') : 'nothing new'}`;
 }
 
 /** How many notifications arrived after the persona last looked. */

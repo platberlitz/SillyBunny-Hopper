@@ -39,6 +39,7 @@ import {
     rankScore,
     discountRepeatAuthors,
     mentionsHandle,
+    summarizeRefresh,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -245,6 +246,33 @@ test('the profile prompt asks for character-specific handles and rules out the o
     assert.doesNotMatch(plain[1].content, /Handles Already Taken/);
     const avoiding = buildProfileMessages(accounts, { avoid: ['@ada', 'bo', '', 'ada'] });
     assert.match(avoiding[1].content, /# Handles Already Taken\nGive every character a handle that is none of these: @ada, @bo\./);
+});
+
+test('summarizeRefresh says what arrived, from whom, and how many notes there are', () => {
+    const accounts = makeAccounts();
+    const result = {
+        posts: [
+            { authorKey: 'character:ada.png' }, { authorKey: 'character:ada.png' }, { authorKey: 'character:bo.png' },
+            { authorKey: 'stranger:x', authorSnapshot: { name: 'Quiet Otto' } }, { authorKey: 'stranger:y', authorSnapshot: { name: 'Ferry Jo' } },
+        ],
+        interactions: [{ type: 'reply' }, { type: 'reply' }, { type: 'like' }, { type: 'repost' }, { type: 'vote' }, { type: 'vote' }],
+        follows: [{}],
+        strangers: [{}, {}],
+        profilesWritten: 1,
+        warnings: ['x', 'y', 'z'],
+    };
+    assert.equal(
+        summarizeRefresh(result, { accounts }),
+        '5 posts from Ada, Bo, Quiet Otto +1 · 2 replies · 1 like · 1 repost · 2 poll votes · 1 new follow · 2 strangers joined · 1 profile written · 3 notes in the console',
+    );
+    assert.equal(summarizeRefresh({ posts: [{ authorKey: 'character:bo.png' }], interactions: [] }, { accounts, topic: '#TideWatch' }), 'About #TideWatch: 1 post from Bo');
+    assert.equal(summarizeRefresh({ posts: [], interactions: [] }), 'nothing new');
+});
+
+test('a cut-off reply leaves a note in the refresh warnings', () => {
+    const accounts = makeAccounts();
+    const result = materializeRefresh({ posts: [], interactions: [], follows: [], salvaged: true }, { accounts, settings: settings(), newId, now: NOW });
+    assert.ok(result.warnings.some(w => /cut off by the token cap/.test(w)));
 });
 
 test('a topic refresh asks for posts about the topic and no trends', () => {
