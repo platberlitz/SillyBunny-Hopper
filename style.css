@@ -322,6 +322,32 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     color: var(--sbtw-accent);
 }
 
+/* The brand mark: the bunny in the accent colour at the head of the nav, sized a step above the tab icons. */
+.sbtw-logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.35rem 0.6rem;
+    margin-right: 0.35rem;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--sbtw-accent);
+    font-size: 1em;
+    cursor: pointer;
+    min-height: var(--sb-control-min-height, 2.2rem);
+    transition: background var(--sbtw-transition);
+}
+
+.sbtw-logo .sbtw-bunny {
+    width: 1.6em;
+    height: 1.6em;
+}
+
+.sbtw-logo:hover {
+    background: var(--sbtw-hover);
+}
+
 /* --- timeline ----------------------------------------------------------- */
 
 .sbtw-main {

@@ -1467,6 +1467,12 @@ function render() {
     }, [sessionBar(), (views[state.view] ?? timelineView)()]);
     const me = personaAccount();
     const nav = el('nav', { className: 'sbtw-nav', attrs: { 'aria-label': 'Timeline sections' } }, [
+        // The brand mark: the bunny at the head of the nav, a tap back to the top of the timeline.
+        el('button', {
+            className: 'sbtw-logo',
+            attrs: { type: 'button', 'aria-label': 'Hopper', title: 'Hopper - back to the top of the timeline' },
+            on: { click: () => { state.view = 'timeline'; state.profileKey = null; render(); const main = state.body?.querySelector('.sbtw-main'); if (main) { main.scrollTop = 0; } } },
+        }, [bunnyIcon()]),
         navButton('Home', 'fa-house', 'timeline'),
         navButton('Notifications', 'fa-bell', 'notifications'),
         el('button', {
