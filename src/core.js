@@ -55,6 +55,8 @@ export const DEFAULTS = Object.freeze({
     tone: '',
     carry: { enabled: false, hours: 48, items: 8, depth: 1 },
     catchUpHours: 0,
+    /** Cap on one reply. Thinking models spend part of it on reasoning, so it is generous by default. */
+    maxTokens: 32768,
     lastRefreshAt: 0,
     profiles: {},
     follows: {},
@@ -282,6 +284,7 @@ export function normalizeSettings(raw) {
             depth: clampInt(carry.depth, 0, 100, DEFAULTS.carry.depth),
         },
         catchUpHours: clampInt(source.catchUpHours, 0, 720, DEFAULTS.catchUpHours),
+        maxTokens: clampInt(source.maxTokens, 256, 1000000, DEFAULTS.maxTokens),
         lastRefreshAt: clampInt(source.lastRefreshAt, 0, Number.MAX_SAFE_INTEGER, 0),
         profiles,
         follows,
@@ -547,7 +550,15 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
     const repliesByPost = new Map();
     const countsByPost = new Map();
     const countsByReply = new Map();
+    const votesByPost = new Map();
     for (const interaction of interactions) {
+        if (interaction.type === 'vote' && Number.isInteger(interaction.pollOptionIndex)) {
+            const byOption = votesByPost.get(interaction.postId) ?? new Map();
+            const voters = byOption.get(interaction.pollOptionIndex) ?? [];
+            voters.push(label(interaction.actorKey, interaction.actorSnapshot));
+            byOption.set(interaction.pollOptionIndex, voters);
+            votesByPost.set(interaction.postId, byOption);
+        }
         if (interaction.type === 'like' || interaction.type === 'repost') {
             // A like or repost with a parent sits on that comment, not on the post.
             const bucket = interaction.parentInteractionId ? countsByReply : countsByPost;
@@ -570,7 +581,14 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
             inertText(post.body),
         ];
         if (post.poll) {
-            const options = post.poll.options.map((option, index) => `${index}) ${option.text}`).join(' | ');
+            // Who voted for what is part of the conversation: characters react to it, and the
+            // model must not have a character vote twice or vote against what they already said.
+            const byOption = votesByPost.get(post.id) ?? new Map();
+            const options = post.poll.options.map((option, index) => {
+                const voters = byOption.get(index) ?? [];
+                const shown = voters.slice(0, 8).join(', ') + (voters.length > 8 ? ` +${voters.length - 8}` : '');
+                return `${index}) ${option.text}${voters.length ? ` (${voters.length}: ${shown})` : ''}`;
+            }).join(' | ');
             lines.push(`poll: ${inertText(post.poll.question)} [${inertText(options)}]`);
         }
         const replies = (repliesByPost.get(post.id) ?? [])
@@ -885,8 +903,54 @@ export function parseProfileResponse(raw, accounts, otherAccounts = []) {
  * Models fence JSON, prefix it with prose, or trail a stray token. Pull the outermost
  * object out rather than trusting the whole string to be valid on its own.
  */
+/** Reasoning models sometimes leave their thinking in the reply; it is prose, not data. */
+function stripReasoning(text) {
+    return text.replace(/<(think|thinking|reasoning|reflection)>[\s\S]*?<\/\1>/gi, '').trim();
+}
+
+/**
+ * Where a top-level object starts: braces inside strings or nested objects are skipped, so a
+ * cut-off reply cannot hand back one of its own children as "the" object, while prose with a
+ * balanced stray "{" before the real one no longer hides it.
+ */
+function objectStarts(text) {
+    const starts = [];
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < text.length && starts.length < 20; i += 1) {
+        const ch = text[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+        } else if (ch === '{' || ch === '[') {
+            if (depth === 0 && ch === '{') {
+                starts.push(i);
+            }
+            depth += 1;
+        } else if (ch === '}' || ch === ']') {
+            depth = Math.max(0, depth - 1);
+        }
+    }
+    // An unbalanced quote in the prose would hide every start; the first brace is the old, blunt fallback.
+    const first = text.indexOf('{');
+    if (first !== -1 && !starts.includes(first)) {
+        starts.push(first);
+    }
+    return starts;
+}
+
 export function parseJsonObject(raw) {
-    const text = String(raw ?? '').trim();
+    const text = stripReasoning(String(raw ?? ''));
     if (!text) {
         throw new Error('empty response');
     }
@@ -896,10 +960,11 @@ export function parseJsonObject(raw) {
         candidates.push(fenced[1].trim());
     }
     candidates.push(text);
-    const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
-    if (start !== -1 && end > start) {
-        candidates.push(text.slice(start, end + 1));
+    for (const start of objectStarts(text)) {
+        if (end > start) {
+            candidates.push(text.slice(start, end + 1));
+        }
     }
     for (const candidate of candidates) {
         try {
@@ -923,11 +988,17 @@ export function parseJsonObject(raw) {
  * Returns null when nothing complete survives, so the caller can retry instead.
  */
 export function salvageTruncatedJson(raw) {
-    const text = String(raw ?? '');
-    const start = text.indexOf('{');
-    if (start === -1) {
-        return null;
+    const text = stripReasoning(String(raw ?? ''));
+    for (const start of objectStarts(text)) {
+        const salvaged = salvageFrom(text, start);
+        if (salvaged) {
+            return salvaged;
+        }
     }
+    return null;
+}
+
+function salvageFrom(text, start) {
     const stack = [];
     let out = '';
     let cut = -1;

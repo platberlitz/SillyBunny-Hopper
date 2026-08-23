@@ -192,6 +192,18 @@ test('the model may like or repost a comment: once per account, on this post, ne
     assert.ok(result.warnings.some(w => /comment nope not found/.test(w)));
 });
 
+test('formatTimeline lists who voted for which poll option', () => {
+    const accounts = makeAccounts();
+    const posts = [{ id: 'p1', authorKey: 'character:ada.png', body: 'Tea or coffee?', createdAt: NOW - 1000, poll: { question: 'Which?', options: [{ id: 'o0', text: 'Tea' }, { id: 'o1', text: 'Coffee' }] } }];
+    const interactions = [
+        { id: 'v1', postId: 'p1', type: 'vote', actorKey: 'character:bo.png', content: null, parentInteractionId: null, pollOptionIndex: 0, createdAt: NOW - 900 },
+        { id: 'v2', postId: 'p1', type: 'vote', actorKey: 'persona:me.png', content: null, parentInteractionId: null, pollOptionIndex: 0, createdAt: NOW - 800 },
+        { id: 'v3', postId: 'p1', type: 'vote', actorKey: 'stranger:x', actorSnapshot: { handle: 'pip_pip', name: 'Pip' }, content: null, parentInteractionId: null, pollOptionIndex: 1, createdAt: NOW - 700 },
+    ];
+    const text = formatTimeline(posts, interactions, accounts, { now: NOW });
+    assert.match(text, /poll: Which\? \[0\) Tea \(2: @bo, @me\) \| 1\) Coffee \(1: @pip_pip\)\]/);
+});
+
 test('formatTimeline tallies a like on a comment on the comment, not on the post', () => {
     const accounts = makeAccounts();
     const posts = [{ id: 'p1', authorKey: 'character:ada.png', body: 'hello', createdAt: NOW - 1000 }];
@@ -322,6 +334,13 @@ test('malformed timeline sessions normalize to safe bounded values', () => {
     assert.deepEqual(result.sessions.good.invited, ['a.png']);
     assert.deepEqual(result.sessions.good.scenarioNoteIds, ['n1']);
     assert.equal(result.activeSessionId, '');
+});
+
+test('the reply budget defaults to 32K and is clamped', () => {
+    assert.equal(settings({}).maxTokens, 32768);
+    assert.equal(settings({ maxTokens: 12 }).maxTokens, 256);
+    assert.equal(settings({ maxTokens: 8192 }).maxTokens, 8192);
+    assert.equal(settings({ maxTokens: 'lots' }).maxTokens, 32768);
 });
 
 test('toneText falls back to the default when the user has not written one', () => {
@@ -568,6 +587,12 @@ test('a custom tone cannot remove the structural rules', () => {
 });
 
 // --- parsing --------------------------------------------------------------
+
+test('parseJsonObject ignores thinking blocks and prose braces before the real object', () => {
+    assert.deepEqual(parseJsonObject('<think>I will return {posts: []} as JSON.</think>\n{"posts":[]}'), { posts: [] });
+    assert.deepEqual(parseJsonObject('Plan: output a {posts} object. Here it is: {"posts":[{"tempId":"p1"}]}'), { posts: [{ tempId: 'p1' }] });
+    assert.deepEqual(parseRefreshResponse('<think>{ "posts": [ half</think>{"posts":[{"tempId":"p1"},{"tempId":"p2","content":"cut').posts.map(p => p.tempId), ['p1']);
+});
 
 test('parseJsonObject copes with fences and surrounding prose', () => {
     assert.deepEqual(parseJsonObject('{"a":1}'), { a: 1 });

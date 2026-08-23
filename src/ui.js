@@ -1636,6 +1636,8 @@ function settingsView() {
 
         el('h3', { text: 'Connection' }),
         field('Write posts with', profileSelect, 'A cheap model is fine here. One refresh writes the whole batch, or one post per request with the option below.'),
+        field('Reply budget (tokens)', numberInput(settings.maxTokens, 256, 1000000, value => save({ maxTokens: value })),
+            'The most one reply may run to. Thinking models (Kimi, GLM, DeepSeek, Qwen...) spend part of it on their reasoning, and a budget that runs out mid-JSON is a malformed reply - so it is generous. Lower it only if your provider refuses the request.'),
 
         el('h3', { text: 'How much each refresh makes' }),
         el('div', { className: 'sbtw-row' }, [

@@ -749,7 +749,8 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 
 .sbtw-composer-input {
     border: none;
-    padding-left: 0;
+    /* A little inset: under a skin that paints this box (Terminal UI does) the text must not hug its edge. */
+    padding: 0.6rem 0.65rem;
 }
 
 .sbtw-timeline-search-row {
@@ -1260,13 +1261,24 @@ body.reduced-motion .sbtw-action-on {
 
 /* --- trending topics bar --------------------------------------------------- */
 
+/* A sideways rail. The host's mobile shell pans the document vertically only and its own
+   horizontal rails opt back in with pan-x; this row needs the same, or a swipe that starts
+   on a chip goes nowhere on a phone. */
 .sbtw-trends {
     display: flex;
     gap: 0.5rem;
     padding: 0.6rem var(--sbtw-gap);
     overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x;
+    -webkit-overflow-scrolling: touch;
     scrollbar-width: thin;
     border-bottom: 1px solid var(--sbtw-divider);
+}
+
+.sbtw-trend {
+    touch-action: pan-x;
 }
 
 .sbtw-trend {

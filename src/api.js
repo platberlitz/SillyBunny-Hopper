@@ -31,10 +31,6 @@ const EXTENSION_PROMPT_TYPE_IN_CHAT = 1;
 const EXTENSION_PROMPT_ROLE_SYSTEM = 0;
 
 const FEED_FILE = 'twitterlike-feed.json';
-const REFRESH_MAX_TOKENS = 4096;
-/** One post plus its reactions never needs a whole batch's worth of output. */
-const TURN_MAX_TOKENS = 1536;
-const PROFILE_MAX_TOKENS_BASE = 1024;
 
 // --- settings -------------------------------------------------------------
 
@@ -773,8 +769,7 @@ async function generateProfilesFor(accounts, allAccounts, signal, { avoid = null
     const targets = new Set(accounts.map(account => account.key));
     const others = allAccounts.filter(account => !targets.has(account.key));
     const messages = buildProfileMessages(accounts, { avoid: avoid ?? others.map(account => account.handle) });
-    const maxTokens = PROFILE_MAX_TOKENS_BASE * (1 + accounts.length);
-    const raw = await runGeneration(messages, maxTokens, signal);
+    const raw = await runGeneration(messages, getSettings().maxTokens, signal);
     try {
         return parseProfileResponse(raw, accounts, others);
     } catch (error) {
@@ -931,7 +926,7 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         trends: !topic,
         topic,
     });
-    const parsed = await generateBatch(messages, REFRESH_MAX_TOKENS, batch, { throwOnFailure: true });
+    const parsed = await generateBatch(messages, current.maxTokens, batch, { throwOnFailure: true });
     const result = materializeRefresh(parsed, {
         accounts: freshAccounts,
         // The prompt asks for active accounts only; this enforces it locally, so a
@@ -1080,7 +1075,7 @@ async function runIncrementalRefresh(batch) {
             trends: index === 1 && !topic,
             topic,
         });
-        const parsed = await generateBatch(messages, TURN_MAX_TOKENS, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
+        const parsed = await generateBatch(messages, settings.maxTokens, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
         if (!parsed) {
             all.warnings.push(`turn ${index}: the model did not return usable JSON, skipped`);
             emptyTurns += 1;
