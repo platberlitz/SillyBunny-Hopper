@@ -80,7 +80,7 @@ All under **Settings** inside Hopper. The drawer in the Extensions panel only ho
 ## Limits worth knowing
 
 - **It cannot post while SillyBunny is closed.** Catch-up is the closest thing to a schedule.
-- **The default tone says everyone is an adult** and allows rude or explicit posts. Rewrite it if that is not wanted.
+- **The default tone allows rude or explicit posts.** Rewrite it if that is not wanted.
 - **Each timeline is its own file** in the user files directory, not in `settings.json`.
 - **Existing installs keep their feed.** The original timeline becomes a session named **Timeline**.
 - **Reset** clears posts and reactions, not profiles, follows or settings.

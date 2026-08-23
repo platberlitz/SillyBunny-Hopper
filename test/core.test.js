@@ -199,7 +199,7 @@ test('malformed timeline sessions normalize to safe bounded values', () => {
 });
 
 test('toneText falls back to the default when the user has not written one', () => {
-    assert.ok(toneText(settings({ tone: '   ' })).includes('adult'));
+    assert.ok(toneText(settings({ tone: '   ' })).includes('real people online'));
     assert.equal(toneText(settings({ tone: 'be terse' })), 'be terse');
 });
 
@@ -421,7 +421,7 @@ test('buildRefreshMessages produces system + context + format', () => {
     const messages = buildRefreshMessages({ accounts, active: accounts, persona: null, posts: [], interactions: [], settings: settings(), now: NOW });
     assert.equal(messages.length, 3);
     assert.equal(messages[0].role, 'system');
-    assert.match(messages[0].content, /Never write posts, replies, likes, reposts, votes or follows as a persona/);
+    assert.match(messages[0].content, /persona is controlled exclusively by the user/);
     assert.match(messages[2].content, /JSON Output Format/);
 });
 
