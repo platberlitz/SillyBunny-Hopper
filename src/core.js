@@ -25,6 +25,9 @@ export const MAX_STRANGERS_KEPT = 30;
 /** Strangers mostly comment; at most this many stranger-authored posts land per refresh. */
 export const MAX_STRANGER_POSTS_PER_REFRESH = 1;
 
+/** A timeline of polls is nobody's timeline. "Optional" in the prompt was not enough. */
+export const MAX_POLLS_PER_REFRESH = 1;
+
 export const DEFAULT_TONE = [
     '- In-character drama, flirtation, gossip, rudeness and explicit references belong on this timeline: use them freely and with full confidence.',
     "- Make accounts post like real people online: funny, messy, indirect, petty, affectionate, dramatic, vulgar or casual. Let each account's own description and personality dictate which of those apply and exactly how far to take them.",
@@ -657,7 +660,7 @@ export function matchesTimelineQuery(post, interactions, query) {
     return values.some(value => searchableText(value).includes(needle));
 }
 
-export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '', strangers = 0, trends = false, topic = '' } = {}) {
+export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '', strangers = 0, trends = false, topic = '', pollLimit = MAX_POLLS_PER_REFRESH } = {}) {
     const activeKeys = new Set(active.map(account => account.key));
     const roster = accounts
         .map((account) => {
@@ -751,7 +754,7 @@ export function buildContextMessage({ accounts, active, persona, session = null,
         `likes: at most ${settings.quotas.likes}`,
         'follows: optional, and sparing. Only when an account would naturally follow another after this activity.',
         settings.polls
-            ? 'polls: optional. Use one when a question or set of choices genuinely fits the account, not as a quota.'
+            ? `polls: at most ${pollLimit} in this whole refresh, and only when a question with fixed answers is genuinely what that account would post. Most refreshes have none: set poll to null on every other post.`
             : 'polls: disabled. Always set poll to null.',
         settings.images.enabled
             ? `image generation: at most ${settings.images.perRefresh} images this refresh. ${imageInstructions(settings)} imagePrompt must contain only the visual description, never the post text or instructions.`
@@ -811,10 +814,10 @@ export function buildTurnInstruction({ index = 1, total = 1, author = null, rema
     ].join('\n');
 }
 
-export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0, turn = null, trends = false, topic = '' }) {
+export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0, turn = null, trends = false, topic = '', pollLimit = MAX_POLLS_PER_REFRESH }) {
     return [
         { role: 'system', content: buildSystemPrompt(settings) },
-        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers, trends, topic }) },
+        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers, trends, topic, pollLimit }) },
         ...(turn ? [{ role: 'user', content: buildTurnInstruction(turn) }] : []),
         { role: 'user', content: buildFormatMessage() },
     ];
@@ -1134,6 +1137,7 @@ export function materializeRefresh(parsed, {
     newId,
     now = Date.now(),
     strangerLimit = 0,
+    pollLimit = MAX_POLLS_PER_REFRESH,
 } = {}) {
     const warnings = [];
     if (parsed?.salvaged) {
@@ -1207,6 +1211,8 @@ export function materializeRefresh(parsed, {
     const tempIds = new Map();
     let imageBudget = settings.images.enabled ? settings.images.perRefresh : 0;
 
+    let pollsUsed = existingPosts.filter(post => post.poll && post.createdAt === now).length;
+    let pollsLeft = Math.max(0, pollLimit - pollsUsed);
     for (const draft of parsed.posts) {
         if (outPosts.length >= settings.quotas.posts) {
             warnings.push('post quota reached, extra posts ignored');
@@ -1246,7 +1252,7 @@ export function materializeRefresh(parsed, {
             body,
             createdAt: now,
             image: imagePrompt ? { url: '', prompt: imagePrompt } : null,
-            poll: cleanPoll(draft?.poll, settings.polls),
+            poll: cleanPoll(draft?.poll, settings.polls && pollsLeft > 0),
             authorSnapshot: snapshotOf(author),
         };
         if (draft?.tempId) {
@@ -1260,6 +1266,9 @@ export function materializeRefresh(parsed, {
         }
         if (post.poll) {
             pollByPostId.set(post.id, post.poll);
+            pollsLeft -= 1;
+        } else if (draft?.poll && settings.polls && pollsLeft <= 0) {
+            warnings.push(`poll: dropped, ${pollLimit} per refresh is the cap`);
         }
         outPosts.push(post);
     }

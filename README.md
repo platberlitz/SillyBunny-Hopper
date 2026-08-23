@@ -28,7 +28,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 - Opens from the Character Menu, next to Roleplay and Conversation, or from the wand menu, and takes over the chat area while open.
 - One or more timelines, each owned by a persona with its own profile, cast, follows and history.
-- **Refresh** picks a few invited characters and asks the model for posts, replies, reposts, likes, follows and poll votes in one request.
+- **Refresh** picks a few invited characters and asks the model for posts, replies, reposts, likes, follows and poll votes in one request. At most one poll per refresh, whatever the model tries.
 - Optional **strangers**: passers-by the model invents. They get profiles, can be followed, and come back later.
 - Characters sometimes repost with a comment; a quote shows the comment with the original post in a card underneath.
 - Post, reply, like and repost by hand, with pictures and polls; replies can be liked and reposted too (a reposted reply shows in Following with the post it was on), and each poll option shows the avatars of who voted for it. `@` in a composer lists the accounts the timeline knows.

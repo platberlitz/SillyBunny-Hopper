@@ -18,6 +18,7 @@ import {
     parseRefreshResponse,
     selectParticipants,
     MAX_NEW_STRANGERS_PER_REFRESH,
+    MAX_POLLS_PER_REFRESH,
 } from './core.js';
 
 // getContext() copies chatId / characterId / chatMetadata by value, so a cached reference
@@ -1064,6 +1065,7 @@ async function runIncrementalRefresh(batch) {
     const total = Math.max(1, quotas.posts);
     const remaining = { replies: quotas.replies, reposts: quotas.reposts, likes: quotas.likes };
     let strangersLeft = session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0;
+    let pollsLeft = MAX_POLLS_PER_REFRESH;
     const cast = active.filter(account => account.kind === KIND_CHARACTER);
     const all = { posts: [], interactions: [], follows: [], strangers: [], trends: [], warnings: [] };
     let emptyTurns = 0;
@@ -1088,6 +1090,7 @@ async function runIncrementalRefresh(batch) {
             now: Date.now(),
             localTime: new Date().toLocaleString(),
             strangers: strangersLeft,
+            pollLimit: pollsLeft,
             turn: { index, total, author, remaining },
             // One set of made-up trends per refresh is plenty; the first turn writes them, and a topic refresh keeps the bar.
             trends: index === 1 && !topic,
@@ -1111,6 +1114,7 @@ async function runIncrementalRefresh(batch) {
             newId,
             now: Date.now(),
             strangerLimit: strangersLeft,
+            pollLimit: pollsLeft,
         });
         await commitBatch(result, batch);
         for (const key of ['posts', 'interactions', 'follows', 'strangers', 'trends', 'warnings']) {
@@ -1127,6 +1131,7 @@ async function runIncrementalRefresh(batch) {
         }
         if (result.strangers.length) {
             strangersLeft = Math.max(0, strangersLeft - result.strangers.length);
+            pollsLeft = Math.max(0, pollsLeft - result.posts.filter(post => post.poll).length);
             // New strangers join the cast for the rest of the refresh.
             liveAccounts = await currentAccounts(sessionId);
             for (const stranger of result.strangers) {

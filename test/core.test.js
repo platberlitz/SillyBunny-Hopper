@@ -300,6 +300,24 @@ test('the prompt keeps the persona one account among many', () => {
     assert.doesNotMatch(system, /Your only job with the persona/);
 });
 
+test('at most one poll survives a refresh, however many the model writes', () => {
+    const accounts = makeAccounts();
+    const poll = { question: 'Which?', options: ['a', 'b'] };
+    const parsed = { posts: [
+        { tempId: '1', authorHandle: '@ada', content: 'first', poll },
+        { tempId: '2', authorHandle: '@bo', content: 'second', poll: { question: 'And?', options: ['c', 'd'] } },
+        { tempId: '3', authorHandle: '@ada', content: 'third', poll },
+    ], interactions: [], follows: [] };
+    const result = materializeRefresh(parsed, { accounts, settings: settings(), newId, now: NOW });
+    assert.deepEqual(result.posts.map(post => Boolean(post.poll)), [true, false, false]);
+    assert.equal(result.posts.filter(post => post.poll).length, 1);
+    assert.equal(result.warnings.filter(w => /poll: dropped/.test(w)).length, 2);
+    assert.match(buildContextMessage({ accounts, active: accounts, persona: null, settings: settings(), now: NOW }), /polls: at most 1 in this whole refresh/);
+    // A rolling refresh spends its one poll on the first turn and asks for none afterwards.
+    assert.match(buildContextMessage({ accounts, active: accounts, persona: null, settings: settings(), now: NOW, pollLimit: 0 }), /polls: at most 0 in this whole refresh/);
+    assert.equal(materializeRefresh(parsed, { accounts, settings: settings(), newId, now: NOW, pollLimit: 0 }).posts.filter(post => post.poll).length, 0);
+});
+
 test('a topic refresh asks for posts about the topic and no trends', () => {
     const accounts = makeAccounts();
     const active = accounts.filter(a => a.kind !== KIND_PERSONA);
