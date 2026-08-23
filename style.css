@@ -1205,6 +1205,13 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     outline-offset: 2px;
 }
 
+/* Fields run to the edge of the scroller (composer, search, session picker), and an outline
+   drawn outside the box is clipped there; inside their own box it is always whole. */
+.sbtw-shell :is(input, textarea, select):focus-visible,
+.sbtw-drawer :is(input, textarea, select):focus-visible {
+    outline-offset: -2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
     .sbtw-action,
     .sbtw-poll-bar {
