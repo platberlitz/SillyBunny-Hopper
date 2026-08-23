@@ -32,6 +32,9 @@ const EXTENSION_PROMPT_TYPE_IN_CHAT = 1;
 const EXTENSION_PROMPT_ROLE_SYSTEM = 0;
 
 const FEED_FILE = 'twitterlike-feed.json';
+/** How much of the open roleplay chat a character may react to, when the user turns that on. */
+const SCENE_MESSAGE_LIMIT = 12;
+const SCENE_CHAR_BUDGET = 4000;
 
 // --- settings -------------------------------------------------------------
 
@@ -894,6 +897,44 @@ export async function generatePostImage(prompt, signal) {
  * re-check every quota locally before storing anything. The model is never trusted to have
  * obeyed the prompt.
  */
+/**
+ * The roleplay scene the user has open, for the accounts who are in it. Only read when the
+ * user asks for it: this is chat text leaving the chat, and it goes wherever the timeline's
+ * connection profile points.
+ */
+function currentScene(settings) {
+    if (!settings.scene.enabled) {
+        return null;
+    }
+    const context = ctx();
+    const chat = Array.isArray(context.chat) ? context.chat : [];
+    const lines = [];
+    const names = new Set();
+    let budget = SCENE_CHAR_BUDGET;
+    for (const message of chat.slice(-SCENE_MESSAGE_LIMIT * 2).reverse()) {
+        if (!message || message.is_system || typeof message.mes !== 'string' || !message.mes.trim()) {
+            continue;
+        }
+        const who = message.name || (message.is_user ? context.name1 : context.name2) || 'Someone';
+        const line = `${who}: ${message.mes.trim().replace(/\s+/g, ' ')}`;
+        if (lines.length >= SCENE_MESSAGE_LIMIT || line.length > budget) {
+            break;
+        }
+        budget -= line.length + 1;
+        lines.unshift(line);
+        // Who is in the scene is who speaks in it: a name the model can match to an account.
+        if (!message.is_user) {
+            names.add(who);
+        }
+    }
+    // Without a name there is nobody the scene belongs to, and no way to say who may mention
+    // it - so it is not worth sending the chat at all.
+    if (!lines.length || !names.size) {
+        return null;
+    }
+    return { names: [...names], lines };
+}
+
 export async function runRefresh({ sessionId = ensureActiveSession().id, feed, signal, onProgress = () => {}, onPartial = () => {}, topic = '' } = {}) {
     const settings = getSettings();
     const session = settings.sessions[sessionId];
@@ -932,11 +973,12 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
     const freshPersona = freshAccounts.find(account => account.kind === KIND_PERSONA) ?? persona;
     const current = getSettings();
 
+    const scene = currentScene(current);
     const newId = () => ctx().uuidv4();
     const batch = {
         sessionId, feed, signal, onProgress, onPartial,
         accounts: freshAccounts, active: freshActive, persona: freshPersona, session, settings: current,
-        activeKeys, newId, topic,
+        activeKeys, newId, topic, scene,
     };
 
     if (current.incremental) {
@@ -960,6 +1002,7 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         // A topic refresh keeps the trending bar as it is; a plain one writes a fresh set.
         trends: !topic,
         topic,
+        scene,
     });
     const parsed = await generateBatch(messages, current.maxTokens, batch, { throwOnFailure: true });
     const result = materializeRefresh(parsed, {
@@ -1076,7 +1119,7 @@ async function commitBatch(result, { sessionId, feed, signal, onProgress, onPart
  * post lands in seconds and the timeline fills in as it goes.
  */
 async function runIncrementalRefresh(batch) {
-    const { sessionId, feed, signal, onProgress, accounts, active, persona, session, settings, activeKeys, newId, topic } = batch;
+    const { sessionId, feed, signal, onProgress, accounts, active, persona, session, settings, activeKeys, newId, topic, scene } = batch;
     const quotas = settings.quotas;
     const total = Math.max(1, quotas.posts);
     const remaining = { replies: quotas.replies, reposts: quotas.reposts, likes: quotas.likes };
@@ -1107,6 +1150,7 @@ async function runIncrementalRefresh(batch) {
             localTime: new Date().toLocaleString(),
             strangers: strangersLeft,
             pollLimit: pollsLeft,
+            scene,
             turn: { index, total, author, remaining },
             // One set of made-up trends per refresh is plenty; the first turn writes them, and a topic refresh keeps the bar.
             trends: index === 1 && !topic,

@@ -1820,6 +1820,10 @@ function settingsView() {
         }, [document.createTextNode(settings.tone)]),
         'Only the tone. The rules that keep a refresh parseable are not editable, so you cannot break it from here.'),
 
+        el('h3', { text: 'The chat you have open' }),
+        checkbox('Let characters react to the roleplay', settings.scene.enabled, value => save({ scene: { ...settings.scene, enabled: value } })),
+        el('p', { className: 'sbtw-hint', text: 'Sends the last few messages of the chat you have open to this timeline\'s model, so the characters in that scene can post about their own day. Only they may mention it. Off by default: with it on, chat text leaves the chat and goes wherever the connection above points.' }),
+
         el('h3', { text: 'Feeding it back into chats' }),
         checkbox('Mention recent activity in chats', settings.carry.enabled, value => save({ carry: { ...settings.carry, enabled: value } })),
         settings.carry.enabled

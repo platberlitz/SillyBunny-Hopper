@@ -37,6 +37,8 @@ export const DEFAULT_TONE = [
     '- This is the whole cast\'s timeline, not a feed about the user. Give the accounts their own days, opinions, jokes, plans and quarrels with each other, and let the user come up only when they would genuinely be on that account\'s mind.',
     '- Ambient accounts are ordinary strangers outside the cast: have them follow, like, reply, repost, gossip and wander into public drama the way real bystanders do.',
     '- Use standard Unicode emoji wherever they suit the voice, and keep a post plain wherever plain reads best.',
+    '- Break a post where the thought breaks, with "\\n" between the lines: a punchline on its own line, an afterthought under the point it undercuts, three grievances as three lines, a correction below what it corrects. A one-line remark stays one line, and nobody writes essays on a timeline, but a post that runs on for four sentences in a single block is nobody\'s voice.',
+    '- Replies break the same way when they carry more than one beat.',
 ].join('\n');
 
 export const DEFAULT_IMAGE_INSTRUCTIONS = [
@@ -58,6 +60,8 @@ export const DEFAULTS = Object.freeze({
     polls: true,
     tone: '',
     carry: { enabled: false, hours: 48, items: 8, depth: 1 },
+    /** Off by default: with it on, the open roleplay chat is sent to the timeline's model. */
+    scene: { enabled: false },
     catchUpHours: 0,
     /** Cap on one reply. Thinking models spend part of it on reasoning, so it is generous by default. */
     maxTokens: 32768,
@@ -282,6 +286,7 @@ export function normalizeSettings(raw) {
         polls: source.polls !== false,
         incremental: source.incremental === true,
         tone: typeof source.tone === 'string' ? source.tone.slice(0, 8000) : '',
+        scene: { enabled: isPlainObject(source.scene) && source.scene.enabled === true },
         carry: {
             enabled: carry.enabled === true,
             hours: clampInt(carry.hours, 1, 720, DEFAULTS.carry.hours),
@@ -588,7 +593,7 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
         const counts = countsByPost.get(post.id) ?? { like: 0, repost: 0 };
         const lines = [
             `postId=${post.id} ${label(post.authorKey, post.authorSnapshot)} likes=${counts.like} reposts=${counts.repost}`,
-            inertText(post.body),
+            blockText(post.body, '  '),
         ];
         if (post.poll) {
             // Who voted for what is part of the conversation: characters react to it, and the
@@ -607,12 +612,12 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
         for (const reply of replies) {
             if (reply.type === 'repost') {
                 const what = reply.parentInteractionId ? `reposted replyId=${reply.parentInteractionId} with a comment` : 'reposted with a comment';
-                lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)} ${what}: ${inertText(reply.content)}`);
+                lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)} ${what}: ${blockText(reply.content, '    ')}`);
                 continue;
             }
             const counts = countsByReply.get(reply.id);
             const tally = counts ? ` (likes=${counts.like} reposts=${counts.repost})` : '';
-            lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)}${tally}: ${inertText(reply.content)}`);
+            lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)}${tally}: ${blockText(reply.content, '    ')}`);
         }
         return lines.join('\n');
     };
@@ -666,7 +671,7 @@ export function matchesTimelineQuery(post, interactions, query) {
     return values.some(value => searchableText(value).includes(needle));
 }
 
-export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '', strangers = 0, trends = false, topic = '', pollLimit = MAX_POLLS_PER_REFRESH } = {}) {
+export function buildContextMessage({ accounts, active, persona, session = null, posts = [], interactions = [], settings, now = Date.now(), localTime = '', strangers = 0, trends = false, topic = '', pollLimit = MAX_POLLS_PER_REFRESH, scene = null } = {}) {
     const activeKeys = new Set(active.map(account => account.key));
     const roster = accounts
         .map((account) => {
@@ -706,6 +711,17 @@ export function buildContextMessage({ accounts, active, persona, session = null,
             '# User Persona',
             'One account among many here: mentioned or answered when it fits, not the subject of the timeline.',
             characterBlock(persona),
+            '',
+        );
+    }
+
+    if (scene?.lines?.length) {
+        const inIt = scene.names.join(', ');
+        sections.push(
+            '# Current Scene',
+            `${inertText(inIt)} ${scene.names.length === 1 ? 'is' : 'are'} living through this right now, away from the timeline.`,
+            'Only the accounts in it know it happened. They may allude to it, complain about it, boast about it or post around it in their own words, the way someone posts about their own day. Never retell it line by line, never quote it, and never let an account who is not in it mention it.',
+            `<scene-data>\n${inertText(scene.lines.join('\n'))}\n</scene-data>`,
             '',
         );
     }
@@ -776,7 +792,7 @@ const OUTPUT_SHAPE = {
     posts: [{
         tempId: 'local id used only inside this response',
         authorHandle: 'exact @handle of a non-persona account allowed to author',
-        content: 'post text',
+        content: 'post text; "\\n" starts a new line inside it',
         poll: { question: 'optional poll question', options: ['first answer', 'second answer'] },
         imagePrompt: 'optional image prompt or null',
     }],
@@ -786,7 +802,7 @@ const OUTPUT_SHAPE = {
         targetPostId: 'existing postId, when targeting a post from the timeline above',
         parentInteractionId: 'existing replyId when answering, liking or reposting a comment directly, otherwise null',
         type: 'like | repost | reply | vote',
-        content: 'required for reply; an optional short comment for repost (a quote); null otherwise',
+        content: 'required for reply; an optional short comment for repost (a quote); null otherwise. "\\n" starts a new line inside it',
         pollOptionIndex: 1,
     }],
     follows: [{
@@ -822,10 +838,10 @@ export function buildTurnInstruction({ index = 1, total = 1, author = null, rema
     ].join('\n');
 }
 
-export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0, turn = null, trends = false, topic = '', pollLimit = MAX_POLLS_PER_REFRESH }) {
+export function buildRefreshMessages({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers = 0, turn = null, trends = false, topic = '', pollLimit = MAX_POLLS_PER_REFRESH, scene = null }) {
     return [
         { role: 'system', content: buildSystemPrompt(settings) },
-        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers, trends, topic, pollLimit }) },
+        { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers, trends, topic, pollLimit, scene }) },
         ...(turn ? [{ role: 'user', content: buildTurnInstruction(turn) }] : []),
         { role: 'user', content: buildFormatMessage() },
     ];
@@ -1126,6 +1142,15 @@ function cleanPoll(poll, enabled) {
  */
 export function inertText(text) {
     return String(text ?? '').replace(/\{\{/g, '{\u200b{');
+}
+
+/**
+ * Posts and replies may run to several lines, and the timeline the model reads is one record
+ * per line. Continuations carry a marker so a line break inside a post cannot pass for a new
+ * record - including a line that starts with "postId=" or "replyId=".
+ */
+export function blockText(text, indent = '  ') {
+    return inertText(text).split(/\r\n?|\n/).join(`\n${indent}| `);
 }
 
 /**

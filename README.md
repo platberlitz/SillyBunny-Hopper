@@ -77,6 +77,7 @@ All under **Settings** inside Hopper. The drawer in the Extensions panel only ho
 - **One post at a time** - one request per post. Slower overall, but the first post shows up in seconds.
 - **Pictures** - off by default. Needs Quick Image Gen 3.3 or newer (bundled in SillyBunny; Hopper asks it quietly for one picture per post) or, failing that, the Image Generation extension's `/imagine` set up.
 - **Voice** - the tone text, the only editable part of the prompt.
+- **The chat you have open** - off by default. With it on, the last few messages of the open chat go to the timeline's model, so the characters in that scene can post about their own day; only they may mention it.
 - **Feeding it back into chats** - carryover, off by default.
 - **Catching up** - one refresh when the feed opens, after N hours.
 
