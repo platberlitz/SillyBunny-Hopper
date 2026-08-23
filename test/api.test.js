@@ -24,6 +24,7 @@ import {
     generatePersonaProfile,
     deleteSession,
     regenerateAllProfiles,
+    generatePostImage,
 } from '../src/api.js';
 import { SETTINGS_KEY } from '../src/core.js';
 
@@ -196,6 +197,22 @@ test('avatarUrl asks for the smaller image on mobile', async () => {
 });
 
 // --- storage --------------------------------------------------------------
+
+test('pictures come from Quick Image Gen when its /qig advertises quiet=true, else from /imagine', async () => {
+    current.SlashCommandParser = { commands: { qig: { namedArgumentList: [{ name: 'mode' }, { name: 'quiet' }] } } };
+    current.nextImage = '/user/images/qig/cat.png';
+    assert.equal(await generatePostImage('a cat, "tabby"'), '/user/images/qig/cat.png');
+    assert.match(current.calls.find(call => call[0] === 'slash')[1], /^\/qig quiet=true mode=direct "a cat, \\"tabby\\""$/);
+    current.calls.length = 0;
+    current.nextImage = 'QIG failed: no provider configured';
+    assert.equal(await generatePostImage('a cat'), '', 'a status line is not a picture');
+    current.calls.length = 0;
+    current.SlashCommandParser = { commands: { qig: { namedArgumentList: [{ name: 'mode' }] } } };
+    current.nextImage = '/user/images/sd/cat.png';
+    assert.equal(await generatePostImage('a cat'), '/user/images/sd/cat.png');
+    assert.match(current.calls.find(call => call[0] === 'slash')[1], /^\/imagine quiet=true gallery=false "a cat"$/);
+    delete current.SlashCommandParser;
+});
 
 test('the feed is written to the files endpoint, never into settings', async () => {
     const feed = { version: 1, posts: [{ id: 'p1', body: 'hello' }], interactions: [] };

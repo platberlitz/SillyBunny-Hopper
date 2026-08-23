@@ -72,7 +72,7 @@ All under **Settings** inside Hopper. The drawer in the Extensions panel only ho
 - **Connection** - which connection profile writes the posts; unset, the current one. A cheap model is fine. **Reply budget** caps one reply (32K tokens by default: thinking models spend part of it on reasoning, and a budget that runs out mid-JSON is a malformed reply); lower it only if a provider refuses it.
 - **How much each refresh makes** - caps for posts, replies, reposts and likes (defaults 8, 12, 4 and 18).
 - **One post at a time** - one request per post. Slower overall, but the first post shows up in seconds.
-- **Pictures** - off by default.
+- **Pictures** - off by default. Needs Quick Image Gen 3.3 or newer (bundled in SillyBunny; Hopper asks it quietly for one picture per post) or, failing that, the Image Generation extension's `/imagine` set up.
 - **Voice** - the tone text, the only editable part of the prompt.
 - **Feeding it back into chats** - carryover, off by default.
 - **Catching up** - one refresh when the feed opens, after N hours.

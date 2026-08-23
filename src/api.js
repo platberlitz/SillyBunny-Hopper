@@ -833,6 +833,16 @@ export async function regenerateAllProfiles(sessionId = ensureActiveSession().id
     return written;
 }
 
+/**
+ * Quick Image Gen 3.3+ advertises a quiet /qig that hands back the saved image path; before
+ * that, or without it, the Image Generation extension's /imagine is the only way to a picture.
+ */
+function imageCommandFor(context, quoted) {
+    const qig = context.SlashCommandParser?.commands?.qig;
+    const quiet = Array.isArray(qig?.namedArgumentList) && qig.namedArgumentList.some(argument => argument?.name === 'quiet');
+    return quiet ? `/qig quiet=true mode=direct ${quoted}` : `/imagine quiet=true gallery=false ${quoted}`;
+}
+
 export async function generatePostImage(prompt, signal) {
     const context = ctx();
     if (typeof context.executeSlashCommandsWithOptions !== 'function') {
@@ -840,14 +850,22 @@ export async function generatePostImage(prompt, signal) {
     }
     try {
         // The prompt is model output, so it is quoted and escaped: unquoted, its text could
-        // parse as named /imagine flags (quiet=false gallery=true ...) instead of the image
-        // description. quiet=true returns the URL instead of posting into the open chat.
+        // parse as named flags (quiet=false gallery=true ...) instead of the image
+        // description. quiet=true returns the path instead of posting into the open chat.
         const quoted = `"${String(prompt ?? '').replace(/[\\"]/g, '\\$&').replace(/\s+/g, ' ').trim()}"`;
         const result = await context.executeSlashCommandsWithOptions(
-            `/imagine quiet=true gallery=false ${quoted}`,
+            imageCommandFor(context, quoted),
             { handleExecutionErrors: true, signal },
         );
-        return typeof result?.pipe === 'string' ? result.pipe : '';
+        const pipe = typeof result?.pipe === 'string' ? result.pipe.trim() : '';
+        // Anything that is not a path or URL is a status line ("QIG failed: ..."), not a picture.
+        if (!/^(\/|https?:\/\/|data:image\/|blob:)/i.test(pipe)) {
+            if (pipe) {
+                console.warn('[Hopper] image generation returned no image:', pipe);
+            }
+            return '';
+        }
+        return pipe;
     } catch (error) {
         console.warn('[Hopper] image generation failed, publishing text only', error);
         return '';
