@@ -611,9 +611,16 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     position: absolute;
     top: 0;
     right: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 1.35em;
+    padding: 0;
     border: none;
     background: transparent;
     color: var(--sbtw-muted);
+    line-height: 1;
     cursor: pointer;
 }
 
@@ -964,7 +971,8 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 .sbtw-btn > i,
-.sbtw-action > i {
+.sbtw-action > i,
+.sbtw-delete > i {
     width: 1em;
     line-height: 1;
     text-align: center;
@@ -1261,7 +1269,6 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     .sbtw-tab,
     .sbtw-action,
     .sbtw-avatar-button,
-    .sbtw-delete,
     .sbtw-mention-item,
     .sbtw-notification,
     .sbtw-poll-option,
@@ -1275,14 +1282,19 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     .sbtw-action,
     .sbtw-avatar-button,
     .sbtw-btn,
-    .sbtw-delete,
     .sbtw-shell .sbtw-trend {
         min-width: 44px;
     }
 
+    .sbtw-delete::before {
+        position: absolute;
+        width: 44px;
+        height: 44px;
+        content: '';
+    }
+
     .sbtw-post .sbtw-meta:has(> .sbtw-delete) {
-        padding-right: 3rem;
-        min-height: 44px;
+        padding-right: 2rem;
     }
 }
 

@@ -318,6 +318,7 @@ test('the prompt keeps the persona one account among many', () => {
     assert.match(message, /# User Persona\nOne account among many here/);
     assert.doesNotMatch(message, /especially worth answering/);
     const system = buildSystemPrompt(settings());
+    assert.match(system, /in-app parody site called Hopper/);
     assert.match(system, /persona is controlled exclusively by the user/, 'the ownership rule stays');
     assert.match(system, /not a feed about the user/);
     assert.doesNotMatch(system, /Your only job with the persona/);

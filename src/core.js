@@ -559,7 +559,7 @@ export function selectParticipants(accounts, settings, { posts = [], interaction
 
 export function buildSystemPrompt(settings) {
     return [
-        'Write a fake social media timeline for an in-app parody site. Commit to it fully: every account belongs to the user\'s own installation and everything you write stays inside the app.',
+        'Write a fake social media timeline for an in-app parody site called Hopper. Commit to it fully: every account belongs to the user\'s own installation and everything you write stays inside the app.',
         '',
         '# Rules',
         '- Express every action as exactly one of these: a post, poll, follow, like, repost, reply or poll vote.',
