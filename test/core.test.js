@@ -131,6 +131,28 @@ test('v1 settings migrate wholesale into one legacy timeline session', () => {
     });
 });
 
+test('an explicit v2 empty session map stays empty', () => {
+    assert.deepEqual(normalizeSettings({ version: 2, sessions: {} }).sessions, {});
+});
+
+test('malformed v2 sessions still recover legacy timeline state', () => {
+    const result = normalizeSettings({
+        version: 2,
+        sessions: null,
+        invited: ['ada.png'],
+        shards: ['/user/files/twitterlike-feed.json'],
+    });
+    assert.deepEqual(result.sessions.legacy.invited, ['ada.png']);
+    assert.equal(result.sessions.legacy.feedPath, '/user/files/twitterlike-feed.json');
+});
+
+test('session dictionary keys are canonicalised with their bounded ids', () => {
+    const id = 'x'.repeat(130);
+    const result = normalizeSettings({ version: 2, sessions: { [id]: { name: 'Long' } } });
+    assert.deepEqual(Object.keys(result.sessions), ['x'.repeat(120)]);
+    assert.equal(result.sessions['x'.repeat(120)].id, 'x'.repeat(120));
+});
+
 test('buildNotifications groups likes, replies and posts for the persona, newest first', () => {
     const posts = [
         { id: 'p1', authorKey: 'persona:me.png', body: 'mine', createdAt: 10 },
@@ -765,6 +787,12 @@ test('parseJsonObject copes with fences and surrounding prose', () => {
     assert.throws(() => parseJsonObject('no json here'), /not JSON/);
 });
 
+test('parseJsonObject preserves literal reasoning tags and takes the first complete object', () => {
+    assert.deepEqual(parseJsonObject('{"body":"<think>keep me</think>"}'), { body: '<think>keep me</think>' });
+    assert.deepEqual(parseJsonObject('{"posts":[1]} trailing {"note":2}'), { posts: [1] });
+    assert.deepEqual(parseJsonObject('Example: {"example":true}. Final: {"posts":[2]}'), { posts: [2] });
+});
+
 test('a reply cut off by the token cap keeps its complete items and drops the half-written one', () => {
     const cut = '```json\n{"posts":[{"tempId":"p1","authorHandle":"@a","content":"one"},'
         + '{"tempId":"p2","authorHandle":"@b","content":"two, with \\"quotes\\" and ] } brackets"}],'
@@ -819,6 +847,14 @@ test('a generated handle still avoids colliding with another account', () => {
     assert.notEqual(profiles['character:ada.png'].handle, 'bo');
 });
 
+test('a regenerated profile cannot reuse a specifically forbidden handle', () => {
+    const [ada] = makeAccounts().filter(a => a.kind === 'character');
+    const profiles = parseProfileResponse(JSON.stringify({
+        profiles: [{ entityId: 'ada.png', name: 'Ada', handle: 'ada' }],
+    }), [ada], [], ['ada']);
+    assert.notEqual(profiles['character:ada.png'].handle, 'ada');
+});
+
 // --- materialize ----------------------------------------------------------
 
 function materialize(parsed, overrides = {}) {
@@ -848,6 +884,51 @@ test('activity by an inactive invited account is dropped and reported', () => {
     assert.equal(result.interactions.length, 0);
     assert.equal(result.follows.length, 0);
     assert.ok(result.warnings.some(w => /not active this refresh/.test(w)));
+});
+
+test('post author, topic and trend policy are enforced locally', () => {
+    const adaKey = accountKey('character', 'ada.png');
+    const result = materialize(
+        {
+            posts: [
+                { authorHandle: 'bo', content: '#TideWatch wrong author' },
+                { authorHandle: 'ada', content: 'missing topic' },
+                { authorHandle: 'ada', content: '#TideWatch accepted' },
+            ],
+            interactions: [], follows: [], trends: [{ topic: '#ShouldNotLand', posts: 3 }],
+        },
+        { extra: { allowedPostAuthorKeys: [adaKey], requiredTopic: '#TideWatch', allowTrends: false } },
+    );
+    assert.deepEqual(result.posts.map(post => post.body), ['#TideWatch accepted']);
+    assert.deepEqual(result.trends, []);
+    assert.ok(result.warnings.some(warning => /not allowed to post/.test(warning)));
+    assert.ok(result.warnings.some(warning => /did not include/.test(warning)));
+});
+
+test('per-call image and stranger post remainders are enforced', () => {
+    const accounts = deriveAccounts({
+        characters: [], persona: { entityId: 'me.png', name: 'Me' }, ambient: true,
+        strangers: [{ id: 's1', name: 'Sam', handle: 'sam', bio: '', createdAt: 1 }],
+    });
+    const result = materialize(
+        { posts: [{ authorHandle: 'sam', content: 'hello', imagePrompt: 'portrait' }], interactions: [], follows: [] },
+        {
+            accounts,
+            settings: settings({ images: { enabled: true, perRefresh: 5 } }),
+            extra: { strangerPostLimit: 0, imageLimit: 0 },
+        },
+    );
+    assert.equal(result.posts.length, 0);
+
+    const imageResult = materialize(
+        { posts: [{ authorHandle: 'ada', content: 'hello', imagePrompt: 'portrait' }], interactions: [], follows: [] },
+        {
+            settings: settings({ images: { enabled: true, perRefresh: 5 } }),
+            extra: { imageLimit: 0 },
+        },
+    );
+    assert.equal(imageResult.posts.length, 1);
+    assert.equal(imageResult.posts[0].image, null);
 });
 
 test('a reply parent must belong to the post being replied to', () => {
@@ -1115,6 +1196,11 @@ test('{{macros}} in stored text cannot survive into prompts', () => {
     assert.doesNotMatch(profile, /\{\{getvar/);
     assert.match(context, /\\n# New rules/);
     assert.match(profile, /\\n# New rules/);
+
+    const metadata = formatTimeline([
+        { id: '{{lastMessage}}', authorKey: 'missing', authorSnapshot: { handle: '{{lastMessage}}' }, body: 'safe', createdAt: NOW },
+    ], [], [], { now: NOW });
+    assert.doesNotMatch(metadata, /\{\{lastMessage/);
 });
 
 test('formatTimeline stays inside its character budget and keeps the newest posts', () => {
@@ -1129,6 +1215,10 @@ test('formatTimeline stays inside its character budget and keeps the newest post
     assert.ok(timeline.length < 50_000, `timeline was ${timeline.length} chars`);
     assert.match(timeline, /newest=true/);
     assert.doesNotMatch(timeline, /oldest=true/);
+    const oversized = formatTimeline([
+        { id: 'huge', authorKey: 'character:ada.png', body: 'x'.repeat(100_000), createdAt: NOW },
+    ], [], accounts, { now: NOW });
+    assert.ok(oversized.length <= 48_000);
 });
 
 // --- timeline search ------------------------------------------------------
@@ -1144,7 +1234,7 @@ test('matchesTimelineQuery searches bodies, authors, polls and replies', () => {
     };
     const replies = [
         { type: 'reply', postId: 'p1', content: 'the rooftop has wasps', actorSnapshot: { name: 'Bo', handle: 'bo' } },
-        { type: 'like', postId: 'p1', actorSnapshot: { name: 'Kettle Logic', handle: 'kettlelogic' } },
+        { type: 'repost', postId: 'p1', content: 'quote-only phrase', actorSnapshot: { name: 'Kettle Logic', handle: 'kettlelogic' } },
         { type: 'reply', postId: 'other', content: 'unrelated', actorSnapshot: { name: 'Bo', handle: 'bo' } },
     ];
 
@@ -1157,6 +1247,7 @@ test('matchesTimelineQuery searches bodies, authors, polls and replies', () => {
     assert.equal(matchesTimelineQuery(post, replies, 'where'), true); // poll question
     // A reply match surfaces its root post; likes and other posts' replies do not.
     assert.equal(matchesTimelineQuery(post, replies, 'Bo'), true);
+    assert.equal(matchesTimelineQuery(post, replies, 'quote-only'), true);
     assert.equal(matchesTimelineQuery(post, [], 'wasps'), false);
     assert.equal(matchesTimelineQuery(post, replies, 'no such thing'), false);
 });
@@ -1261,4 +1352,3 @@ test('trends are normalised, deduped, capped at eight, and formatted as counts',
     assert.deepEqual(parseRefreshResponse('{"posts":[],"trends":[{"topic":"x","posts":3}]}').trends, [{ topic: 'x', posts: 3 }]);
     assert.deepEqual(normalizeSession({ trends: [{ topic: 'kept', posts: 2 }] }).trends.map(t => t.topic), ['kept']);
 });
-

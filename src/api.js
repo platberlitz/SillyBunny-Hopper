@@ -5,6 +5,8 @@ import {
     KIND_AMBIENT,
     KIND_CHARACTER,
     KIND_PERSONA,
+    POST_MAX_CHARS,
+    REPLY_MAX_CHARS,
     SETTINGS_KEY,
     buildCarryoverBlock,
     buildCorrectionMessage,
@@ -12,6 +14,7 @@ import {
     buildRefreshMessages,
     deriveAccounts,
     digestLines,
+    inertText,
     materializeRefresh,
     normalizeSettings,
     parseProfileResponse,
@@ -37,6 +40,12 @@ const FEED_FILE = 'twitterlike-feed.json';
 /** How much of the open roleplay chat a character may react to, when the user turns that on. */
 const SCENE_MESSAGE_LIMIT = 12;
 const SCENE_CHAR_BUDGET = 4000;
+const REQUEST_TIMEOUT_MS = 30_000;
+
+function requestSignal(signal) {
+    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
 
 // --- settings -------------------------------------------------------------
 
@@ -158,16 +167,19 @@ export async function deleteSession(sessionId) {
         throw new Error('That timeline session no longer exists.');
     }
     const path = session.feedPath || (sessionId === 'legacy' ? settings.shards[0] : '');
-    if (path) {
+    if (path && isFeedPath(path)) {
         const response = await fetch('/api/files/delete', {
             method: 'POST',
             headers: context.getRequestHeaders(),
             body: JSON.stringify({ path }),
+            signal: requestSignal(),
         });
         // A file that is already gone is the outcome we wanted.
         if (!response.ok && response.status !== 404) {
             throw new Error(`Could not delete the timeline file (${response.status})`);
         }
+    } else if (path) {
+        console.warn('[Hopper] refusing to delete a non-Hopper file while removing its local timeline', path);
     }
     const fresh = getSettings();
     const sessions = { ...fresh.sessions };
@@ -336,7 +348,7 @@ export async function currentAccounts(sessionId = ensureActiveSession().id) {
 
 export function avatarUrl(account) {
     const context = ctx();
-    if (!account || account.kind === KIND_AMBIENT) {
+    if (!account || account.kind === KIND_AMBIENT || !account.entityId) {
         return '';
     }
     const type = account.kind === KIND_PERSONA ? 'persona' : 'avatar';
@@ -349,29 +361,37 @@ export function avatarUrl(account) {
 
 const emptyFeed = () => ({ version: 1, posts: [], interactions: [] });
 const INTERACTION_TYPES = new Set(['like', 'repost', 'reply', 'vote']);
+const MAX_DATE_VALUE = 8_640_000_000_000_000;
+const MAX_FEED_BYTES = 20 * 1024 * 1024;
+const MAX_ENCODED_FEED_BYTES = Math.ceil(MAX_FEED_BYTES / 3) * 4 + 1024;
 
 const isObj = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-const storedText = value => (typeof value === 'string' ? value : '');
+const storedText = (value, max = 0) => (typeof value === 'string' ? (max ? value.slice(0, max) : value) : '');
+const storedId = value => {
+    const id = storedText(value, 120).trim();
+    return /^[a-zA-Z0-9_-]+$/.test(id) ? id : '';
+};
 const storedTime = value => {
     const number = Number(value);
-    return Number.isFinite(number) ? number : 0;
+    return Number.isFinite(number) && Math.abs(number) <= MAX_DATE_VALUE ? number : 0;
 };
 
 function storedSnapshot(raw) {
     if (!isObj(raw)) {
         return null;
     }
+    const handle = storedText(raw.handle, 20);
     return {
-        key: storedText(raw.key),
-        kind: storedText(raw.kind),
-        handle: storedText(raw.handle),
-        name: storedText(raw.name),
+        key: storedText(raw.key, 520),
+        kind: storedText(raw.kind, 20),
+        handle: /^[a-z0-9_]{1,20}$/.test(handle) ? handle : '',
+        name: storedText(raw.name, 120),
     };
 }
 
 function storedPost(raw) {
-    const id = storedText(raw?.id).trim();
-    const authorKey = storedText(raw?.authorKey).trim();
+    const id = storedId(raw?.id);
+    const authorKey = storedText(raw?.authorKey, 520).trim();
     if (!id || !authorKey) {
         return null;
     }
@@ -384,12 +404,12 @@ function storedPost(raw) {
     return {
         id,
         authorKey,
-        body: storedText(raw.body),
+        body: storedText(raw.body, POST_MAX_CHARS),
         createdAt: storedTime(raw.createdAt),
         image: isObj(raw.image) && typeof raw.image.url === 'string'
             ? {
-                url: raw.image.url,
-                prompt: storedText(raw.image.prompt),
+                url: raw.image.url.slice(0, 4000),
+                prompt: storedText(raw.image.prompt, 2000),
                 ...(Number.isInteger(raw.image.width) && raw.image.width > 0 && Number.isInteger(raw.image.height) && raw.image.height > 0
                     ? { width: raw.image.width, height: raw.image.height }
                     : {}),
@@ -397,10 +417,10 @@ function storedPost(raw) {
             : null,
         poll: pollRaw && typeof pollRaw.question === 'string' && options.length >= 2
             ? {
-                question: pollRaw.question,
+                question: pollRaw.question.slice(0, 200),
                 options: options.map((option, index) => ({
-                    id: storedText(option.id) || `option-${index}`,
-                    text: option.text,
+                    id: storedText(option.id, 120) || `option-${index}`,
+                    text: option.text.slice(0, 120),
                 })),
             }
             : null,
@@ -409,10 +429,10 @@ function storedPost(raw) {
 }
 
 function storedInteraction(raw, validPostIds) {
-    const id = storedText(raw?.id).trim();
-    const postId = storedText(raw?.postId).trim();
-    const actorKey = storedText(raw?.actorKey).trim();
-    const type = storedText(raw?.type);
+    const id = storedId(raw?.id);
+    const postId = storedId(raw?.postId);
+    const actorKey = storedText(raw?.actorKey, 520).trim();
+    const type = storedText(raw?.type, 20);
     if (!id || !postId || !actorKey || !INTERACTION_TYPES.has(type)) {
         return null;
     }
@@ -425,8 +445,8 @@ function storedInteraction(raw, validPostIds) {
         postId,
         type,
         actorKey,
-        content: storedText(raw.content) || null,
-        parentInteractionId: storedText(raw.parentInteractionId) || null,
+        content: storedText(raw.content, REPLY_MAX_CHARS) || null,
+        parentInteractionId: storedId(raw.parentInteractionId) || null,
         pollOptionIndex: Number.isInteger(raw?.pollOptionIndex) && raw.pollOptionIndex >= 0 ? raw.pollOptionIndex : null,
         createdAt: storedTime(raw.createdAt),
         actorSnapshot: storedSnapshot(raw.actorSnapshot),
@@ -483,16 +503,23 @@ export async function loadFeed(sessionId = ensureActiveSession().id) {
     if (!path) {
         return emptyFeed();
     }
+    if (!isFeedPath(path)) {
+        throw new Error('The saved timeline path is not a Hopper timeline file.');
+    }
     const url = `${path}?t=${Date.now()}`;
     let text = '';
     try {
-        const response = await fetch(url, { cache: 'no-store' });
+        const response = await fetch(url, { cache: 'no-store', signal: requestSignal() });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
         // Read as text, not json(): browsers word the parse failure differently, and the
         // body itself is the only thing that says what actually went wrong.
         text = await response.text();
+        const encoded = /^[A-Za-z0-9+/\s=]+$/.test(text);
+        if (text.length > MAX_ENCODED_FEED_BYTES || (text.length > MAX_FEED_BYTES && !encoded)) {
+            throw new Error('the file is larger than 20 MB');
+        }
     } catch (error) {
         console.error('[Hopper] the saved timeline could not be fetched', url, error);
         throw new Error(`The saved timeline could not be read from ${path} (${error.message}). Try again, or reset the timeline to start over.`);
@@ -506,11 +533,18 @@ export async function loadFeed(sessionId = ensureActiveSession().id) {
     if (raw === null && /^[A-Za-z0-9+/\s=]+$/.test(text)) {
         // Some hosts store the upload payload verbatim instead of decoding it, leaving the
         // feed on disk as base64. Read it back rather than calling the timeline unreadable.
-        raw = parseJson(fromBase64(text));
+        const decoded = fromBase64(text);
+        if (decoded.length > MAX_FEED_BYTES) {
+            throw new Error(`The saved timeline at ${path} is larger than 20 MB.`);
+        }
+        raw = parseJson(decoded);
     }
     if (!isObj(raw) || !Array.isArray(raw.posts) || !Array.isArray(raw.interactions)) {
         console.error('[Hopper] the saved timeline is not a timeline file', url, text.slice(0, 300));
         throw new Error(`The file at ${path} is not a timeline - it starts with "${text.trim().slice(0, 40)}". If that looks like a web page, the server did not hand back the saved file.`);
+    }
+    if (Number(raw.version ?? 1) > 1) {
+        throw new Error(`The file at ${path} uses a newer timeline format.`);
     }
     return normalizeFeed(raw);
 }
@@ -552,14 +586,29 @@ function toBase64(text) {
     return btoa(binary);
 }
 
+function isFeedPath(path) {
+    return typeof path === 'string' && /^\/user\/files\/twitterlike-feed(?:-[a-zA-Z0-9_-]+)?\.json$/.test(path);
+}
+
+function shortHash(value) {
+    let hash = 2166136261;
+    for (const char of String(value)) {
+        hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 function sessionFileName(session) {
     const existing = session.feedPath.split('/').pop();
-    if (existing) {
+    if (existing && isFeedPath(`/user/files/${existing}`)) {
         return existing;
     }
-    return session.id === 'legacy'
-        ? FEED_FILE
-        : `twitterlike-feed-${session.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80)}.json`;
+    if (session.id === 'legacy') {
+        return FEED_FILE;
+    }
+    const safe = session.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80) || 'timeline';
+    const changed = safe !== session.id;
+    return `twitterlike-feed-${safe}${changed ? `-${shortHash(session.id)}` : ''}.json`;
 }
 
 async function uploadFeed(feed, sessionId, signal) {
@@ -569,17 +618,30 @@ async function uploadFeed(feed, sessionId, signal) {
         throw new Error('That timeline session no longer exists.');
     }
     const body = JSON.stringify({ version: 1, posts: feed.posts, interactions: feed.interactions });
+    if (body.length > MAX_FEED_BYTES) {
+        throw new Error('The feed is too large to save safely (20 MB limit).');
+    }
     const response = await fetch('/api/files/upload', {
         method: 'POST',
         headers: context.getRequestHeaders(),
         body: JSON.stringify({ name: sessionFileName(session), data: toBase64(body) }),
-        signal,
+        signal: requestSignal(signal),
     });
     if (!response.ok) {
         throw new Error(`Could not save the feed (${response.status})`);
     }
-    const { path } = await readJson(response, 'The file upload');
+    const uploaded = await readJson(response, 'The file upload');
+    const path = isFeedPath(uploaded.path) ? uploaded.path : session.feedPath;
+    if (!isFeedPath(path)) {
+        throw new Error('The file upload did not return a valid Hopper timeline path.');
+    }
+    if (!isFeedPath(uploaded.path)) {
+        // The endpoint already overwrote the trusted filename. Keep memory on that commit
+        // instead of reporting failure and letting an older in-memory feed overwrite it.
+        console.error('[Hopper] the feed was saved but the upload response omitted its path; retaining the existing pointer');
+    }
     const settings = getSettings();
+    const firstPath = !settings.sessions[sessionId]?.feedPath;
     if (settings.sessions[sessionId]?.feedPath !== path) {
         updateSettings({
             sessions: {
@@ -588,39 +650,68 @@ async function uploadFeed(feed, sessionId, signal) {
             },
             ...(sessionId === 'legacy' ? { shards: [path] } : {}),
         });
+        if (firstPath && typeof context.saveSettings === 'function') {
+            try {
+                await context.saveSettings();
+            } catch (error) {
+                // The feed upload already committed. Keep memory aligned with it and let the
+                // debounced settings write retry the new pointer instead of rolling back history.
+                console.error('[Hopper] the feed was saved but its path could not be flushed immediately', error);
+            }
+        }
     }
     return path;
 }
 
 // The picker's accept="image/*" is advisory only; validate before buffering anything.
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const IMAGE_TYPES = new Map([
+    ['image/png', 'png'],
+    ['image/jpeg', 'jpg'],
+    ['image/gif', 'gif'],
+    ['image/webp', 'webp'],
+]);
+
+function hasImageSignature(bytes, type) {
+    if (type === 'image/png') return bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+    if (type === 'image/jpeg') return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    if (type === 'image/gif') return String.fromCharCode(...bytes.slice(0, 4)) === 'GIF8';
+    return String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
+}
 
 /** Attaches a picture the user picked from their device to a post they are writing. */
 export async function uploadImage(file) {
     const context = ctx();
-    // SVG is refused on purpose: it can carry scripts and would be served from the host origin.
-    if (!file || typeof file.type !== 'string' || !file.type.startsWith('image/') || file.type === 'image/svg+xml') {
+    const extension = IMAGE_TYPES.get(file?.type);
+    if (!extension) {
         throw new Error('That file is not a supported image.');
     }
     if (file.size > MAX_IMAGE_BYTES) {
         throw new Error('That image is too large - the limit is 10 MB.');
     }
     const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    if (!hasImageSignature(bytes, file.type)) {
+        throw new Error('That file does not match its image type.');
+    }
     let binary = '';
-    for (const byte of new Uint8Array(buffer)) {
+    for (const byte of bytes) {
         binary += String.fromCharCode(byte);
     }
-    const extension = (file.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '');
     const name = `twitterlike-${context.uuidv4()}.${extension}`;
     const response = await fetch('/api/files/upload', {
         method: 'POST',
         headers: context.getRequestHeaders(),
         body: JSON.stringify({ name, data: btoa(binary) }),
+        signal: requestSignal(),
     });
     if (!response.ok) {
         throw new Error(`Could not upload that image (${response.status})`);
     }
     const { path } = await readJson(response, 'The image upload');
+    if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) {
+        throw new Error('The image upload did not return a valid path.');
+    }
     return path;
 }
 
@@ -725,7 +816,7 @@ export async function flushFeed(sessionId = '') {
 
 // --- generation -----------------------------------------------------------
 
-export function listConnectionProfiles() {
+export function listConnectionProfiles({ throwOnError = false } = {}) {
     const context = ctx();
     const service = context.ConnectionManagerRequestService;
     if (!service) {
@@ -733,8 +824,10 @@ export function listConnectionProfiles() {
     }
     try {
         return service.getSupportedProfiles() ?? [];
-    } catch {
-        // Connection Manager is disabled; the caller falls back to generateRaw.
+    } catch (error) {
+        if (throwOnError) {
+            throw new Error('Connection Manager profiles could not be read.', { cause: error });
+        }
         return [];
     }
 }
@@ -765,7 +858,10 @@ async function runGeneration(messages, maxTokens, signal) {
     const settings = getSettings();
     const service = context.ConnectionManagerRequestService;
 
-    if (settings.profileId && service) {
+    if (settings.profileId) {
+        if (!service || !listConnectionProfiles({ throwOnError: true }).some(profile => profile?.id === settings.profileId)) {
+            throw new Error('The selected connection profile is unavailable. Choose another connection in Hopper settings.');
+        }
         const result = await service.sendRequest(settings.profileId, messages, maxTokens, {
             stream: false,
             signal,
@@ -789,10 +885,11 @@ async function generateProfilesFor(accounts, allAccounts, signal, { avoid = null
     }
     const targets = new Set(accounts.map(account => account.key));
     const others = allAccounts.filter(account => !targets.has(account.key));
-    const messages = buildProfileMessages(accounts, { avoid: avoid ?? others.map(account => account.handle) });
+    const avoided = avoid ?? others.map(account => account.handle);
+    const messages = buildProfileMessages(accounts, { avoid: avoided });
     const raw = await runGeneration(messages, getSettings().maxTokens, signal);
     try {
-        return parseProfileResponse(raw, accounts, others);
+        return parseProfileResponse(raw, accounts, others, avoided);
     } catch (error) {
         console.warn('[Hopper] profile generation returned unusable JSON', error);
         return {};
@@ -800,7 +897,7 @@ async function generateProfilesFor(accounts, allAccounts, signal, { avoid = null
 }
 
 /**
- * Writes the persona's timeline profile (name, handle, bio, location) with the same
+ * Generates the persona's timeline profile (name, handle, bio, location) with the same
  * connection that writes posts, from the persona description. Returns the profile or null.
  */
 export async function generatePersonaProfile(sessionId = ensureActiveSession().id, { signal } = {}) {
@@ -889,7 +986,7 @@ export async function generatePostImage(prompt, signal) {
         // The prompt is model output, so it is quoted and escaped: unquoted, its text could
         // parse as named flags (quiet=false gallery=true ...) instead of the image
         // description. quiet=true returns the path instead of posting into the open chat.
-        const quoted = `"${String(prompt ?? '').replace(/[\\"]/g, '\\$&').replace(/\s+/g, ' ').trim()}"`;
+        const quoted = `"${inertText(prompt).replace(/[\\"]/g, '\\$&').replace(/\s+/g, ' ').trim()}"`;
         const result = await context.executeSlashCommandsWithOptions(
             imageCommandFor(context, quoted),
             { handleExecutionErrors: true, signal },
@@ -985,20 +1082,30 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
 
     // Re-derive so freshly generated handles are the ones the prompt advertises.
     const freshAccounts = await currentAccounts(sessionId);
-    const activeKeys = new Set(active.map(account => account.key));
-    const freshActive = freshAccounts.filter(account => activeKeys.has(account.key));
     const freshPersona = freshAccounts.find(account => account.kind === KIND_PERSONA) ?? persona;
     const current = getSettings();
+    const currentSession = current.sessions[sessionId];
+    if (!currentSession) {
+        throw new Error('That timeline session no longer exists.');
+    }
+    const freshByKey = new Map(freshAccounts.map(account => [account.key, account]));
+    const freshActive = active
+        .map(account => freshByKey.get(account.key))
+        .filter(account => account && (account.kind !== KIND_AMBIENT || currentSession.ambient));
+    if (!freshActive.length && !currentSession.ambient) {
+        throw new Error('Invite a character first, or let strangers join in.');
+    }
+    const activeKeys = new Set(freshActive.map(account => account.key));
 
     const scene = currentScene(current);
     const newId = () => ctx().uuidv4();
     const batch = {
         sessionId, feed, signal, onProgress, onPartial,
-        accounts: freshAccounts, active: freshActive, persona: freshPersona, session, settings: current,
+        accounts: freshAccounts, active: freshActive, persona: freshPersona, session: currentSession, settings: current,
         activeKeys, newId, topic, scene,
     };
 
-    if (current.incremental) {
+    if (current.incremental && current.quotas.posts > 0) {
         const result = current.concurrency > 1
             ? await runParallelRefresh(batch)
             : await runIncrementalRefresh(batch);
@@ -1011,13 +1118,13 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         accounts: freshAccounts,
         active: freshActive,
         persona: freshPersona,
-        session,
+        session: currentSession,
         posts: feed.posts,
         interactions: feed.interactions,
         settings: current,
         now: Date.now(),
         localTime: new Date().toLocaleString(),
-        strangers: session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
+        strangers: currentSession.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
         // A topic refresh keeps the trending bar as it is; a plain one writes a fresh set.
         trends: !topic,
         topic,
@@ -1029,12 +1136,15 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         // The prompt asks for active accounts only; this enforces it locally, so a
         // malformed batch cannot act through an invited-but-deactivated character.
         allowedActorKeys: [...activeKeys],
+        allowedPostAuthorKeys: [...activeKeys],
         settings: current,
         posts: feed.posts,
         interactions: feed.interactions,
         newId,
         now: Date.now(),
-        strangerLimit: session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
+        strangerLimit: currentSession.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
+        requiredTopic: topic,
+        allowTrends: !topic,
     });
     await commitBatch(result, batch);
     updateSession(sessionId, { lastRefreshAt: Date.now() });
@@ -1129,7 +1239,11 @@ async function commitBatch(result, { sessionId, feed, signal, onProgress, onPart
         updateSession(sessionId, { follows });
     }
 
-    onPartial(result);
+    try {
+        onPartial(result);
+    } catch (error) {
+        console.error('[Hopper] refresh observer failed after commit', error);
+    }
 }
 
 /**
@@ -1142,7 +1256,7 @@ async function commitBatch(result, { sessionId, feed, signal, onProgress, onPart
  * both paces - one at a time, and several at once.
  */
 async function runOneTurn(batch, { index, total, author, turnSettings, strangersLeft, pollsLeft, trends, liveAccounts, activeKeys, remaining }) {
-    const { feed, persona, session, newId, topic, scene } = batch;
+    const { feed, persona, session, topic, scene } = batch;
     const messages = buildRefreshMessages({
         accounts: liveAccounts,
         active: liveAccounts.filter(account => activeKeys.has(account.key)),
@@ -1160,21 +1274,7 @@ async function runOneTurn(batch, { index, total, author, turnSettings, strangers
         trends,
         topic,
     });
-    const parsed = await generateBatch(messages, turnSettings.maxTokens, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
-    if (!parsed) {
-        return null;
-    }
-    return materializeRefresh(parsed, {
-        accounts: liveAccounts,
-        allowedActorKeys: [...activeKeys],
-        settings: turnSettings,
-        posts: feed.posts,
-        interactions: feed.interactions,
-        newId,
-        now: Date.now(),
-        strangerLimit: strangersLeft,
-        pollLimit: pollsLeft,
-    });
+    return generateBatch(messages, turnSettings.maxTokens, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
 }
 
 /**
@@ -1185,19 +1285,20 @@ async function runOneTurn(batch, { index, total, author, turnSettings, strangers
  * a poll or the trending bar.
  */
 async function runParallelRefresh(batch) {
-    const { sessionId, feed, signal, onProgress, accounts, active, session, settings, activeKeys, topic } = batch;
+    const { sessionId, feed, signal, onProgress, accounts, active, session, settings, activeKeys, topic, newId } = batch;
     const quotas = settings.quotas;
-    const total = Math.max(1, quotas.posts);
-    const width = Math.min(Math.max(1, settings.concurrency), total);
+    const total = quotas.posts;
     const cast = active.filter(account => account.kind === KIND_CHARACTER);
+    const width = cast.length ? Math.min(Math.max(1, settings.concurrency), total) : 1;
     const shares = {
         replies: shareQuota(quotas.replies, total),
         reposts: shareQuota(quotas.reposts, total),
         likes: shareQuota(quotas.likes, total),
     };
     const all = { posts: [], interactions: [], follows: [], strangers: [], trends: [], warnings: [] };
-    let done = 0;
     let commits = Promise.resolve();
+    let successfulTurns = 0;
+    let firstTransportError = null;
 
     for (let start = 1; start <= total; start += width) {
         signal?.throwIfAborted();
@@ -1209,11 +1310,17 @@ async function runParallelRefresh(batch) {
             ? `Writing posts ${wave[0]}-${wave.at(-1)} of ${total} at once...`
             : `Post ${wave[0]} of ${total}...`);
 
-        const results = await Promise.all(wave.map(async (index) => {
+        const jobs = wave.map(async (index) => {
             const remaining = { replies: shares.replies[index - 1], reposts: shares.reposts[index - 1], likes: shares.likes[index - 1] };
-            const turnSettings = { ...settings, quotas: { posts: 1, ...remaining } };
+            const imageLimit = settings.images.enabled && index <= settings.images.perRefresh ? 1 : 0;
+            const turnSettings = {
+                ...settings,
+                quotas: { posts: 1, ...remaining },
+                images: { ...settings.images, perRefresh: imageLimit },
+            };
+            let parsed;
             try {
-                const result = await runOneTurn(batch, {
+                parsed = await runOneTurn(batch, {
                     index,
                     total,
                     author: cast.length ? cast[(index - 1) % cast.length] : null,
@@ -1226,50 +1333,82 @@ async function runParallelRefresh(batch) {
                     activeKeys,
                     remaining,
                 });
-                return { index, result };
             } catch (error) {
                 if (signal?.aborted) {
                     throw error;
                 }
                 console.warn(`[Hopper] post ${index} of ${total} failed`, error);
-                return { index, result: null, error };
+                firstTransportError ??= error;
+                all.warnings.push(`turn ${index}: ${error.message || 'request failed'}`);
+                return;
             }
-        }));
-
-        for (const { index, result } of results.sort((a, b) => a.index - b.index)) {
-            if (!result) {
+            if (!parsed) {
                 all.warnings.push(`turn ${index}: nothing usable came back, skipped`);
-                continue;
+                return;
             }
-            // Committing writes the whole feed, so the turns take their turn here even though
-            // they were written at the same time.
-            commits = commits.then(() => commitBatch(result, batch));
-            await commits;
-            for (const key of ['posts', 'interactions', 'follows', 'strangers', 'trends', 'warnings']) {
-                all[key].push(...result[key]);
-            }
-            done += result.posts.length;
-        }
-        if (!done && start + width > total) {
-            break;
-        }
+            successfulTurns += 1;
+            const commit = commits.then(async () => {
+                const liveAccounts = await currentAccounts(sessionId);
+                const allowedPostAuthorKeys = authorKeysForTurn(cast.length ? cast[(index - 1) % cast.length] : null, liveAccounts, activeKeys);
+                const result = materializeRefresh(parsed, {
+                    accounts: liveAccounts,
+                    allowedActorKeys: [...activeKeys],
+                    allowedPostAuthorKeys,
+                    allowNewStrangerPosts: !cast.length,
+                    settings: turnSettings,
+                    posts: feed.posts,
+                    interactions: feed.interactions,
+                    newId,
+                    now: Date.now(),
+                    strangerLimit: index === 1 && session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
+                    strangerPostLimit: index === 1 ? 1 : 0,
+                    pollLimit: index === 1 ? MAX_POLLS_PER_REFRESH : 0,
+                    imageLimit,
+                    requiredTopic: topic,
+                    allowTrends: index === 1 && !topic,
+                });
+                await commitBatch(result, batch);
+                for (const stranger of result.strangers) {
+                    activeKeys.add(`${KIND_AMBIENT}:${stranger.id}`);
+                }
+                for (const key of ['posts', 'interactions', 'follows', 'strangers', 'trends', 'warnings']) {
+                    all[key].push(...result[key]);
+                }
+            });
+            commits = commit;
+            await commit;
+        });
+        await Promise.all(jobs);
     }
 
+    if (!successfulTurns && firstTransportError) {
+        throw firstTransportError;
+    }
     if (all.strangers.length) {
         // Anyone new joins the cast for the next refresh.
         await currentAccounts(sessionId);
     }
-    updateSession(sessionId, { lastRefreshAt: Date.now() });
+    if (successfulTurns) {
+        updateSession(sessionId, { lastRefreshAt: Date.now() });
+    }
     return all;
+}
+
+function authorKeysForTurn(author, accounts, activeKeys) {
+    return author
+        ? [author.key]
+        : accounts.filter(account => account.kind === KIND_AMBIENT && activeKeys.has(account.key)).map(account => account.key);
 }
 
 async function runIncrementalRefresh(batch) {
     const { sessionId, feed, signal, onProgress, accounts, active, persona, session, settings, activeKeys, newId, topic, scene } = batch;
     const quotas = settings.quotas;
-    const total = Math.max(1, quotas.posts);
+    const total = quotas.posts;
     const remaining = { replies: quotas.replies, reposts: quotas.reposts, likes: quotas.likes };
     let strangersLeft = session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0;
     let pollsLeft = MAX_POLLS_PER_REFRESH;
+    let imagesLeft = settings.images.enabled ? settings.images.perRefresh : 0;
+    let strangerPostsLeft = 1;
     const cast = active.filter(account => account.kind === KIND_CHARACTER);
     const all = { posts: [], interactions: [], follows: [], strangers: [], trends: [], warnings: [] };
     let emptyTurns = 0;
@@ -1282,7 +1421,11 @@ async function runIncrementalRefresh(batch) {
             break;
         }
         onProgress(`Post ${index} of ${total}...`);
-        const turnSettings = { ...settings, quotas: { posts: 1, replies: remaining.replies, reposts: remaining.reposts, likes: remaining.likes } };
+        const turnSettings = {
+            ...settings,
+            quotas: { posts: 1, replies: remaining.replies, reposts: remaining.reposts, likes: remaining.likes },
+            images: { ...settings.images, perRefresh: Math.min(1, imagesLeft) },
+        };
         const messages = buildRefreshMessages({
             accounts: liveAccounts,
             active: liveAccounts.filter(account => activeKeys.has(account.key)),
@@ -1313,14 +1456,23 @@ async function runIncrementalRefresh(batch) {
         const result = materializeRefresh(parsed, {
             accounts: liveAccounts,
             allowedActorKeys: [...activeKeys],
+            allowedPostAuthorKeys: authorKeysForTurn(author, liveAccounts, activeKeys),
+            allowNewStrangerPosts: !author,
             settings: turnSettings,
             posts: feed.posts,
             interactions: feed.interactions,
             newId,
             now: Date.now(),
             strangerLimit: strangersLeft,
+            strangerPostLimit: strangerPostsLeft,
             pollLimit: pollsLeft,
+            imageLimit: imagesLeft,
+            requiredTopic: topic,
+            allowTrends: index === 1 && !topic,
         });
+        const imagesUsed = result.posts.filter(post => post.image?.prompt).length;
+        const pollsUsed = result.posts.filter(post => post.poll).length;
+        const strangerPostsUsed = result.posts.filter(post => post.authorSnapshot?.kind === KIND_AMBIENT).length;
         await commitBatch(result, batch);
         for (const key of ['posts', 'interactions', 'follows', 'strangers', 'trends', 'warnings']) {
             all[key].push(...result[key]);
@@ -1334,9 +1486,11 @@ async function runIncrementalRefresh(batch) {
                 remaining.likes = Math.max(0, remaining.likes - 1);
             }
         }
+        strangersLeft = Math.max(0, strangersLeft - result.strangers.length);
+        pollsLeft = Math.max(0, pollsLeft - pollsUsed);
+        imagesLeft = Math.max(0, imagesLeft - imagesUsed);
+        strangerPostsLeft = Math.max(0, strangerPostsLeft - strangerPostsUsed);
         if (result.strangers.length) {
-            strangersLeft = Math.max(0, strangersLeft - result.strangers.length);
-            pollsLeft = Math.max(0, pollsLeft - result.posts.filter(post => post.poll).length);
             // New strangers join the cast for the rest of the refresh.
             liveAccounts = await currentAccounts(sessionId);
             for (const stranger of result.strangers) {

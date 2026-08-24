@@ -241,11 +241,17 @@ export function normalizeSettings(raw) {
     if (isPlainObject(source.sessions)) {
         for (const [id, value] of Object.entries(source.sessions)) {
             if (id && isPlainObject(value)) {
-                sessions[id] = normalizeSession(value, id);
+                const session = normalizeSession(value, id);
+                if (session.id && !sessions[session.id]) {
+                    sessions[session.id] = session;
+                }
             }
         }
     }
-    if (!Object.keys(sessions).length) {
+    const explicitlyEmptySessions = source.version === 2
+        && isPlainObject(source.sessions)
+        && !Object.keys(source.sessions).length;
+    if (!Object.keys(sessions).length && !explicitlyEmptySessions) {
         sessions.legacy = normalizeSession({
             name: 'Timeline',
             type: 'Open timeline',
@@ -345,13 +351,12 @@ export function handleFromName(name, taken = new Set()) {
         return base;
     }
     // Suffix inside the 20-character mention grammar: a 20-char base + "2" would not match.
-    for (let suffix = 2; suffix < 1000; suffix += 1) {
+    for (let suffix = 2; ; suffix += 1) {
         const candidate = `${base.slice(0, 20 - String(suffix).length)}${suffix}`;
         if (!taken.has(candidate)) {
             return candidate;
         }
     }
-    return `${base.slice(0, 18)}_x`;
 }
 
 /**
@@ -610,7 +615,7 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
     const byKey = new Map(accounts.map(account => [account.key, account]));
     const label = (key, snapshot) => {
         const account = byKey.get(key);
-        return `@${account?.handle ?? snapshot?.handle ?? 'unknown'}`;
+        return `@${inertText(account?.handle ?? snapshot?.handle ?? 'unknown')}`;
     };
     const cutoff = now - windowHours * 3600 * 1000;
     const recent = posts
@@ -620,12 +625,16 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
     if (!recent.length) {
         return 'No recent activity.';
     }
+    const recentIds = new Set(recent.map(post => post.id));
 
     const repliesByPost = new Map();
     const countsByPost = new Map();
     const countsByReply = new Map();
     const votesByPost = new Map();
     for (const interaction of interactions) {
+        if (!recentIds.has(interaction.postId)) {
+            continue;
+        }
         if (interaction.type === 'vote' && Number.isInteger(interaction.pollOptionIndex)) {
             const byOption = votesByPost.get(interaction.postId) ?? new Map();
             const voters = byOption.get(interaction.pollOptionIndex) ?? [];
@@ -651,7 +660,7 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
     const blockOf = (post) => {
         const counts = countsByPost.get(post.id) ?? { like: 0, repost: 0 };
         const lines = [
-            `postId=${post.id} ${label(post.authorKey, post.authorSnapshot)} likes=${counts.like} reposts=${counts.repost}`,
+            `postId=${inertText(post.id)} ${label(post.authorKey, post.authorSnapshot)} likes=${counts.like} reposts=${counts.repost}`,
             blockText(post.body, '  '),
         ];
         if (post.poll) {
@@ -670,13 +679,13 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
         const replies = maxReplies > 0 ? kept.slice(-maxReplies) : [];
         for (const reply of replies) {
             if (reply.type === 'repost') {
-                const what = reply.parentInteractionId ? `reposted replyId=${reply.parentInteractionId} with a comment` : 'reposted with a comment';
-                lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)} ${what}: ${blockText(reply.content, '    ')}`);
+                const what = reply.parentInteractionId ? `reposted replyId=${inertText(reply.parentInteractionId)} with a comment` : 'reposted with a comment';
+                lines.push(`  replyId=${inertText(reply.id)} ${label(reply.actorKey, reply.actorSnapshot)} ${what}: ${blockText(reply.content, '    ')}`);
                 continue;
             }
             const counts = countsByReply.get(reply.id);
             const tally = counts ? ` (likes=${counts.like} reposts=${counts.repost})` : '';
-            lines.push(`  replyId=${reply.id} ${label(reply.actorKey, reply.actorSnapshot)}${tally}: ${blockText(reply.content, '    ')}`);
+            lines.push(`  replyId=${inertText(reply.id)} ${label(reply.actorKey, reply.actorSnapshot)}${tally}: ${blockText(reply.content, '    ')}`);
         }
         return lines.join('\n');
     };
@@ -686,7 +695,10 @@ export function formatTimeline(posts, interactions, accounts, { now = Date.now()
     let used = 0;
     for (const post of recent) {
         const block = blockOf(post);
-        if (blocks.length && used + block.length > TIMELINE_CHAR_BUDGET) {
+        if (used + block.length > TIMELINE_CHAR_BUDGET) {
+            if (!blocks.length) {
+                blocks.push(block.slice(0, TIMELINE_CHAR_BUDGET));
+            }
             break;
         }
         blocks.push(block);
@@ -699,7 +711,7 @@ function searchableText(value) {
     return String(value ?? '')
         .normalize('NFKD')
         .replace(/\p{Mark}/gu, '')
-        .toLocaleLowerCase();
+        .toLowerCase();
 }
 
 /** A reply match returns its root post, keeping search results readable as conversations. */
@@ -717,7 +729,7 @@ export function matchesTimelineQuery(post, interactions, query) {
         ...(post.poll?.options ?? []).map(option => option.text),
     ];
     for (const reply of interactions) {
-        if (reply.type !== 'reply' || reply.postId !== post.id) {
+        if ((reply.type !== 'reply' && !(reply.type === 'repost' && reply.content)) || reply.postId !== post.id) {
             continue;
         }
         values.push(
@@ -965,12 +977,15 @@ export function buildProfileMessages(accounts, { avoid = [] } = {}) {
     ];
 }
 
-export function parseProfileResponse(raw, accounts, otherAccounts = []) {
+export function parseProfileResponse(raw, accounts, otherAccounts = [], avoid = []) {
     const { data } = parseJsonObjectOrSalvage(raw);
     const byEntity = new Map(accounts.map(account => [account.entityId, account]));
     // An account's own derived handle must not block its generated one, or the first
     // profile ever written for "Seraphina" comes back as @seraphina2.
-    const taken = new Set(otherAccounts.map(account => account.handle));
+    const taken = new Set([
+        ...otherAccounts.map(account => account.handle),
+        ...avoid.map(handle => String(handle ?? '').replace(/^@/, '').trim()),
+    ].filter(Boolean));
     const out = {};
     for (const entry of Array.isArray(data.profiles) ? data.profiles : []) {
         const account = byEntity.get(String(entry?.entityId ?? ''));
@@ -1041,23 +1056,64 @@ function objectStarts(text) {
     return starts;
 }
 
+function completeObjects(text) {
+    const out = [];
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < text.length && out.length < 20; i += 1) {
+        const ch = text[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+        } else if (ch === '{' || ch === '[') {
+            if (depth === 0) {
+                start = ch === '{' ? i : -1;
+            }
+            depth += 1;
+        } else if (ch === '}' || ch === ']') {
+            if (depth > 0) {
+                depth -= 1;
+            }
+            if (depth === 0 && start !== -1) {
+                out.push(text.slice(start, i + 1));
+                start = -1;
+            }
+        }
+    }
+    return out;
+}
+
 export function parseJsonObject(raw) {
-    const text = stripReasoning(String(raw ?? ''));
-    if (!text) {
+    const original = String(raw ?? '').trim();
+    if (!original) {
         throw new Error('empty response');
     }
+    try {
+        const parsed = JSON.parse(original);
+        if (isPlainObject(parsed)) {
+            return parsed;
+        }
+    } catch {
+        // Models often wrap an otherwise valid object; try the tolerated shapes below.
+    }
+    const text = stripReasoning(original);
     const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const candidates = [];
     if (fenced) {
         candidates.push(fenced[1].trim());
     }
     candidates.push(text);
-    const end = text.lastIndexOf('}');
-    for (const start of objectStarts(text)) {
-        if (end > start) {
-            candidates.push(text.slice(start, end + 1));
-        }
-    }
     for (const candidate of candidates) {
         try {
             const parsed = JSON.parse(candidate);
@@ -1067,6 +1123,19 @@ export function parseJsonObject(raw) {
         } catch {
             // try the next shape
         }
+    }
+    const objects = completeObjects(text).flatMap((candidate) => {
+        try {
+            const parsed = JSON.parse(candidate);
+            return isPlainObject(parsed) ? [parsed] : [];
+        } catch {
+            return [];
+        }
+    });
+    const shaped = objects.find(object => ['posts', 'profiles', 'interactions', 'follows', 'trends']
+        .some(key => Object.hasOwn(object, key)));
+    if (shaped ?? objects[0]) {
+        return shaped ?? objects[0];
     }
     throw new Error('response was not JSON');
 }
@@ -1223,13 +1292,19 @@ export function blockText(text, indent = '  ') {
 export function materializeRefresh(parsed, {
     accounts,
     allowedActorKeys = null,
+    allowedPostAuthorKeys = null,
+    allowNewStrangerPosts = true,
     settings,
     posts: existingPosts = [],
     interactions: existingInteractions = [],
     newId,
     now = Date.now(),
     strangerLimit = 0,
+    strangerPostLimit = MAX_STRANGER_POSTS_PER_REFRESH,
     pollLimit = MAX_POLLS_PER_REFRESH,
+    imageLimit = settings?.images?.perRefresh ?? 0,
+    requiredTopic = '',
+    allowTrends = true,
 } = {}) {
     const warnings = [];
     if (parsed?.salvaged) {
@@ -1237,6 +1312,7 @@ export function materializeRefresh(parsed, {
     }
     const byHandle = handleIndex(accounts);
     const actorKeys = allowedActorKeys ? new Set(allowedActorKeys) : null;
+    const postAuthorKeys = allowedPostAuthorKeys ? new Set(allowedPostAuthorKeys) : null;
 
     // New strangers first: they become accounts for this batch, so their posts and replies resolve.
     const outStrangers = [];
@@ -1263,6 +1339,9 @@ export function materializeRefresh(parsed, {
             const account = { key: accountKey(KIND_AMBIENT, id), kind: KIND_AMBIENT, entityId: id, name, handle, bio: stranger.bio, location: stranger.location, hasProfile: true, description: '', personality: '', scenario: '' };
             byHandle.set(handle.toLowerCase(), account);
             actorKeys?.add(account.key);
+            if (allowNewStrangerPosts) {
+                postAuthorKeys?.add(account.key);
+            }
             outStrangers.push(stranger);
         }
     } else if (Array.isArray(parsed.strangers) && parsed.strangers.length) {
@@ -1271,6 +1350,8 @@ export function materializeRefresh(parsed, {
     let strangerPosts = 0;
     const existingPostIds = new Set(existingPosts.map(post => post.id));
     const existingReplyIds = new Set(existingInteractions.filter(isAnswerable).map(item => item.id));
+    const postById = new Map(existingPosts.map(post => [post.id, post]));
+    const replyById = new Map(existingInteractions.filter(isAnswerable).map(item => [item.id, item]));
     const pollByPostId = new Map(existingPosts.filter(post => post.poll).map(post => [post.id, post.poll]));
 
     const seenPairs = new Set(existingInteractions.map(item => `${item.postId}|${item.actorKey}|${item.type}|${item.parentInteractionId ?? ''}`));
@@ -1301,10 +1382,9 @@ export function materializeRefresh(parsed, {
     // Posts first, so interactions can target them by tempId.
     const outPosts = [];
     const tempIds = new Map();
-    let imageBudget = settings.images.enabled ? settings.images.perRefresh : 0;
+    let imageBudget = settings.images.enabled ? Math.max(0, imageLimit) : 0;
 
-    let pollsUsed = existingPosts.filter(post => post.poll && post.createdAt === now).length;
-    let pollsLeft = Math.max(0, pollLimit - pollsUsed);
+    let pollsLeft = Math.max(0, pollLimit);
     for (const draft of parsed.posts) {
         if (outPosts.length >= settings.quotas.posts) {
             warnings.push('post quota reached, extra posts ignored');
@@ -1314,8 +1394,12 @@ export function materializeRefresh(parsed, {
         if (!author) {
             continue;
         }
+        if (postAuthorKeys && !postAuthorKeys.has(author.key)) {
+            warnings.push(`post: dropped, @${author.handle} is not allowed to post this turn`);
+            continue;
+        }
         if (author.kind === KIND_AMBIENT) {
-            if (strangerPosts >= MAX_STRANGER_POSTS_PER_REFRESH) {
+            if (strangerPosts >= strangerPostLimit) {
                 warnings.push(`post: strangers mostly comment, extra post by @${author.handle} dropped`);
                 continue;
             }
@@ -1323,6 +1407,10 @@ export function materializeRefresh(parsed, {
         }
         const body = String(draft?.content ?? '').trim().slice(0, POST_MAX_CHARS);
         if (!body) {
+            continue;
+        }
+        if (requiredTopic && !body.includes(requiredTopic)) {
+            warnings.push(`post: dropped, it did not include ${requiredTopic}`);
             continue;
         }
         const textKey = `${author.key}|${normalizeText(body)}`;
@@ -1347,6 +1435,7 @@ export function materializeRefresh(parsed, {
             poll: cleanPoll(draft?.poll, settings.polls && pollsLeft > 0),
             authorSnapshot: snapshotOf(author),
         };
+        postById.set(post.id, post);
         if (draft?.tempId) {
             const tempKey = String(draft.tempId);
             // First post wins: a duplicate must not silently retarget interactions.
@@ -1399,7 +1488,7 @@ export function materializeRefresh(parsed, {
             continue;
         }
 
-        const target = outPosts.find(post => post.id === postId) ?? existingPosts.find(post => post.id === postId);
+        const target = postById.get(postId);
         let content = null;
         let parentInteractionId = null;
         let pollOptionIndex = null;
@@ -1409,7 +1498,7 @@ export function materializeRefresh(parsed, {
         // turning into a like on the post.
         if ((type === 'like' || type === 'repost') && draft?.parentInteractionId) {
             const parent = String(draft.parentInteractionId);
-            const parentReply = existingReplyIds.has(parent) ? existingInteractions.find(item => item.id === parent) : null;
+            const parentReply = existingReplyIds.has(parent) ? replyById.get(parent) : null;
             if (!parentReply || parentReply.postId !== postId) {
                 warnings.push(`${type}: comment ${parent} not found on post ${postId}`);
                 continue;
@@ -1439,7 +1528,7 @@ export function materializeRefresh(parsed, {
             seenText.add(textKey);
             const parent = draft?.parentInteractionId ? String(draft.parentInteractionId) : '';
             if (parent && existingReplyIds.has(parent)) {
-                const parentReply = existingInteractions.find(item => item.id === parent);
+                const parentReply = replyById.get(parent);
                 // The parent must be a reply to THIS post; a cross-post parent would
                 // invent a conversation that never happened.
                 if (parentReply && parentReply.actorKey !== actor.key && parentReply.postId === postId) {
@@ -1503,7 +1592,7 @@ export function materializeRefresh(parsed, {
         outFollows.push({ actorKey: actor.key, targetKey: target.key });
     }
 
-    return { posts: outPosts, interactions: outInteractions, follows: outFollows, strangers: outStrangers, trends: normalizeTrends(parsed.trends, { now }), warnings };
+    return { posts: outPosts, interactions: outInteractions, follows: outFollows, strangers: outStrangers, trends: allowTrends ? normalizeTrends(parsed.trends, { now }) : [], warnings };
 }
 
 // --- carryover ------------------------------------------------------------
@@ -1513,6 +1602,7 @@ export function digestLines(posts, interactions, accounts, { since = 0, limit = 
     const safe = value => inertText(value).replace(/\s+/g, ' ').trim();
     const nameOf = (key, snapshot) => safe(byKey.get(key)?.name ?? snapshot?.name ?? 'Someone');
     const postById = new Map(posts.map(post => [post.id, post]));
+    const interactionById = new Map(interactions.map(item => [item.id, item]));
     const wanted = keys ? new Set(keys) : null;
     const rows = [];
 
@@ -1527,8 +1617,10 @@ export function digestLines(posts, interactions, accounts, { since = 0, limit = 
         if (item.createdAt < since || (wanted && !wanted.has(item.actorKey))) {
             continue;
         }
-        const target = postById.get(item.postId);
-        const targetName = target ? nameOf(target.authorKey, target.authorSnapshot) : 'a post';
+        const target = item.parentInteractionId ? interactionById.get(item.parentInteractionId) : postById.get(item.postId);
+        const targetKey = target?.actorKey ?? target?.authorKey;
+        const targetSnapshot = target?.actorSnapshot ?? target?.authorSnapshot;
+        const targetName = target && (!wanted || wanted.has(targetKey)) ? nameOf(targetKey, targetSnapshot) : 'a post';
         const actor = nameOf(item.actorKey, item.actorSnapshot);
         if (item.type === 'reply') {
             rows.push({ at: item.createdAt, text: `${actor} replied to ${targetName}: ${safe(item.content)}` });
@@ -1759,4 +1851,3 @@ export function countUnseen(groups, seenAt = 0) {
 export function engagementScore({ like = 0, reply = 0, repost = 0, vote = 0 } = {}) {
     return (Number(like) || 0) + 2 * (Number(reply) || 0) + 2 * (Number(repost) || 0) + (Number(vote) || 0);
 }
-

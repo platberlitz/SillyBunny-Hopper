@@ -99,7 +99,7 @@ Use SillyBunny's extension installer with `https://github.com/platberlitz/SillyB
 
 ```sh
 npm test        # lint + unit tests, no dependencies
-npm run lint    # syntax, formatting, manifest/package agreement
+npm run lint    # JS/JSON syntax, formatting, manifest/package agreement
 ```
 
 Needs Node 20.11 or newer. `src/core.js` is pure and holds the tests; `src/api.js` is host I/O; `index.js` wires the lifecycle; `src/ui.js` is the only file that touches the DOM.

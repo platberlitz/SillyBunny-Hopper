@@ -25,6 +25,7 @@ import {
     deleteSession,
     regenerateAllProfiles,
     generatePostImage,
+    uploadImage,
     clearStrangers,
 } from '../src/api.js';
 import { SETTINGS_KEY } from '../src/core.js';
@@ -72,8 +73,8 @@ function makeContext(overrides = {}) {
         setExtensionPrompt(...args) { calls.push(['setExtensionPrompt', ...args]); },
         async generateRaw(options) { calls.push(['generateRaw', options]); return context.nextResponse ?? '{}'; },
         async getTokenCountAsync(text) { return Math.ceil(text.length / 4); },
-        async executeSlashCommandsWithOptions(command) {
-            calls.push(['slash', command]);
+        async executeSlashCommandsWithOptions(command, options) {
+            calls.push(['slash', command, options]);
             return { pipe: context.nextImage ?? '' };
         },
         ...overrides,
@@ -189,6 +190,7 @@ test('avatarUrl uses the persona thumbnail type for the persona', async () => {
     assert.match(avatarUrl(persona), /type=persona&file=me\.png/);
     assert.match(avatarUrl(character), /type=avatar&file=ada\.png/);
     assert.equal(avatarUrl({ kind: 'ambient' }), '');
+    assert.equal(avatarUrl({ kind: 'character' }), '', 'a historical snapshot without entityId uses initials');
 });
 
 test('avatarUrl asks for the smaller image on mobile', async () => {
@@ -271,6 +273,23 @@ test('deleteSession removes the feed file, the session and any pointer at it', a
     assert.equal(fetchCalls.length, before);
     assert.equal(getSession(third.id), null);
     await assert.rejects(() => deleteSession('nope'), /no longer exists/);
+});
+
+test('deleteSession removes local state without deleting an untrusted path', async () => {
+    const session = ensureActiveSession();
+    updateSession(session.id, { feedPath: '/user/files/unrelated.json' });
+    await deleteSession(session.id);
+    assert.equal(getSession(session.id), null);
+    assert.equal(fetchCalls.length, 0);
+});
+
+test('deleting the final v2 timeline leaves no resurrected legacy state', async () => {
+    const only = ensureActiveSession();
+    await deleteSession(only.id);
+    assert.deepEqual(getSettings().sessions, {});
+    const fresh = ensureActiveSession();
+    assert.notEqual(fresh.id, 'legacy');
+    assert.deepEqual(fresh.invited, []);
 });
 
 test('different timeline sessions derive different character casts', async () => {
@@ -359,7 +378,7 @@ test('concurrent direct saves each wait for their own upload', async () => {
         if (uploads.length === 1) {
             await gate;
         }
-        return { ok: true, status: 200, json: async () => ({ path: `/user/files/save-${uploads.length}.json` }) };
+        return { ok: true, status: 200, json: async () => ({ path: `/user/files/twitterlike-feed-save-${uploads.length}.json` }) };
     });
 
     const first = writeFeed({ posts: [{ id: 'p1', body: 'first' }], interactions: [] });
@@ -368,8 +387,8 @@ test('concurrent direct saves each wait for their own upload', async () => {
     assert.equal(uploads.length, 1);
     release();
 
-    assert.equal(await first, '/user/files/save-1.json');
-    assert.equal(await second, '/user/files/save-2.json');
+    assert.equal(await first, '/user/files/twitterlike-feed-save-1.json');
+    assert.equal(await second, '/user/files/twitterlike-feed-save-2.json');
     assert.equal(uploads.length, 2);
     assert.match(uploads[0], /first/);
     assert.match(uploads[1], /second/);
@@ -445,6 +464,19 @@ test('a feed file left base64 encoded by the host is still read back', async () 
     assert.equal(feed.posts[0].body, 'héllo ✨');
 });
 
+test('the decoded limit permits base64 whose encoding exceeds 20 MB', async () => {
+    updateSettings({ shards: ['/user/files/twitterlike-feed.json'] });
+    const encoded = Buffer.from(JSON.stringify({
+        version: 1,
+        posts: [],
+        interactions: [],
+        padding: 'x'.repeat(15 * 1024 * 1024),
+    })).toString('base64');
+    assert.ok(encoded.length > 20 * 1024 * 1024);
+    fakeFetch(() => ({ ok: true, status: 200, text: async () => encoded }));
+    assert.deepEqual(await loadFeed(), { version: 1, posts: [], interactions: [] });
+});
+
 test('an empty feed file starts over instead of locking the timeline shut', async () => {
     updateSettings({ shards: ['/user/files/twitterlike-feed.json'] });
     fakeFetch(() => ({ ok: true, status: 200, text: async () => '  \n' }));
@@ -455,6 +487,51 @@ test('an empty feed file starts over instead of locking the timeline shut', asyn
 test('an upload that answers with a web page says so instead of throwing a parser message', async () => {
     fakeFetch(() => ({ ok: true, status: 200, text: async () => '<!DOCTYPE html><title>Login</title>' }));
     await assert.rejects(() => writeFeed({ posts: [], interactions: [] }), /still signed in/);
+});
+
+test('a successful overwrite without a returned path retains the trusted pointer', async () => {
+    const session = ensureActiveSession();
+    updateSession(session.id, { feedPath: '/user/files/twitterlike-feed-old.json' });
+    fakeFetch(() => ({ ok: true, status: 200, json: async () => ({}) }));
+    assert.equal(await writeFeed({ posts: [], interactions: [] }), '/user/files/twitterlike-feed-old.json');
+    assert.equal(getSession(session.id).feedPath, '/user/files/twitterlike-feed-old.json');
+});
+
+test('a first upload without a valid path rejects', async () => {
+    fakeFetch(() => ({ ok: true, status: 200, json: async () => ({}) }));
+    await assert.rejects(() => writeFeed({ posts: [], interactions: [] }), /valid Hopper timeline path/);
+});
+
+test('a committed first upload survives an immediate settings flush failure', async () => {
+    current.saveSettings = async () => { throw new Error('settings disk full'); };
+    const session = ensureActiveSession();
+    const path = await writeFeed({ posts: [], interactions: [] }, session.id);
+    assert.equal(path, '/user/files/twitterlike-feed.json');
+    assert.equal(getSession(session.id).feedPath, path);
+});
+
+test('writeFeed refuses a feed that loadFeed could not read back', async () => {
+    const body = 'x'.repeat(20 * 1024 * 1024 + 1);
+    await assert.rejects(
+        () => writeFeed({ posts: [{ id: 'p1', body }], interactions: [] }),
+        /too large to save safely/,
+    );
+    assert.equal(fetchCalls.length, 0);
+});
+
+test('image uploads use the declared raster type, verify its signature and require a path', async () => {
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00]);
+    const file = { name: 'spoofed.svg', type: 'image/png', size: png.length, arrayBuffer: async () => png.buffer };
+    fakeFetch((_url, init) => {
+        assert.match(JSON.parse(init.body).name, /\.png$/);
+        return { ok: true, status: 200, json: async () => ({ path: '/user/files/picture.png' }) };
+    });
+    assert.equal(await uploadImage(file), '/user/files/picture.png');
+
+    const svg = new TextEncoder().encode('<svg>');
+    await assert.rejects(() => uploadImage({ ...file, arrayBuffer: async () => svg.buffer }), /does not match/);
+    fakeFetch(() => ({ ok: true, status: 200, json: async () => ({}) }));
+    await assert.rejects(() => uploadImage(file), /valid path/);
 });
 
 test('a failed feed read reports the status and never uploads', async () => {
@@ -492,6 +569,26 @@ test('malformed rows are dropped instead of crashing renders later', async () =>
     assert.equal(feed.posts[1].poll, null); // a poll that cannot render is dropped, not the post
     assert.deepEqual(feed.interactions.map(item => item.id), ['i3']);
     assert.equal(feed.interactions[0].actorSnapshot.name, 'A');
+});
+
+test('stored feed fields and timestamps are bounded before rendering or prompting', async () => {
+    updateSettings({ shards: ['/user/files/twitterlike-feed.json'] });
+    fakeFetch(() => ({ ok: true, status: 200, json: async () => ({
+        version: 1,
+        posts: [{ id: 'p1', authorKey: 'a', body: 'x'.repeat(10_000), createdAt: 1e300 }],
+        interactions: [{ id: 'r1', postId: 'p1', type: 'reply', actorKey: 'b', content: 'y'.repeat(5_000), createdAt: -1e300 }],
+    }) }));
+    const feed = await loadFeed();
+    assert.equal(feed.posts[0].body.length, 4000);
+    assert.equal(feed.interactions[0].content.length, 2000);
+    assert.equal(feed.posts[0].createdAt, 0);
+    assert.equal(feed.interactions[0].createdAt, 0);
+});
+
+test('a newer feed format is refused instead of silently downgraded', async () => {
+    updateSettings({ shards: ['/user/files/twitterlike-feed.json'] });
+    fakeFetch(() => ({ ok: true, status: 200, json: async () => ({ version: 2, posts: [], interactions: [] }) }));
+    await assert.rejects(() => loadFeed(), /newer timeline format/);
 });
 
 test('loadFeed busts the cache, because the file is overwritten in place', async () => {
@@ -605,7 +702,9 @@ test('one post at a time: one request per post, each committed and shown as it l
     };
     const result = await runRefresh({ feed, onPartial: () => seen.push(feed.posts.length) });
     assert.equal(turns.length, 3, 'one request per post');
-    assert.deepEqual(turns.map(t => t.author), ['ada', 'bo', 'ada'], 'authors rotate');
+    assert.equal(turns[0].author, turns[2].author, 'authors wrap after rotating');
+    assert.notEqual(turns[0].author, turns[1].author, 'authors rotate');
+    assert.deepEqual(new Set(turns.map(t => t.author)), new Set(['ada', 'bo']));
     assert.deepEqual(turns.map(t => t.quotaLine), ['1', '1', '1'], 'each turn is told one post');
     assert.deepEqual(turns.map(t => t.turnLine), ['1/3', '2/3', '3/3']);
     assert.deepEqual(seen, [1, 2, 3], 'the feed is shown after every committed post');
@@ -616,12 +715,54 @@ test('one post at a time: one request per post, each committed and shown as it l
 
     // a malformed turn is skipped, not fatal
     let calls = 0;
-    current.generateRaw = async () => { calls += 1; return calls <= 2 ? 'not json' : JSON.stringify({ posts: [{ authorHandle: 'ada', content: `late ${calls}` }], interactions: [], follows: [] }); };
+    current.generateRaw = async ({ prompt }) => {
+        calls += 1;
+        const author = (/as @(\w+) only/.exec(prompt) || [])[1];
+        return calls <= 2 ? 'not json' : JSON.stringify({ posts: [{ authorHandle: author, content: `late ${calls}` }], interactions: [], follows: [] });
+    };
     const feed2 = emptyFeed();
     const result2 = await runRefresh({ feed: feed2 });
     assert.ok(result2.warnings.some(w => /skipped/.test(w)));
     assert.ok(feed2.posts.length >= 1);
     updateSettings({ incremental: false, concurrency: 3 });
+});
+
+test('incremental mode honours a zero post quota through the batch path', async () => {
+    updateSettings({
+        incremental: true,
+        concurrency: 3,
+        quotas: { posts: 0, replies: 2, reposts: 1, likes: 2 },
+        profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } },
+    });
+    current.nextResponse = JSON.stringify({ posts: [{ authorHandle: 'ada', content: 'must not land' }], interactions: [], follows: [] });
+    const result = await runRefresh({ feed: emptyFeed() });
+    assert.equal(result.posts.length, 0);
+    assert.equal(current.calls.filter(call => call[0] === 'generateRaw').length, 1);
+});
+
+test('sequential rolling mode shares poll and image budgets across every turn', async () => {
+    updateSettings({
+        incremental: true,
+        concurrency: 1,
+        quotas: { posts: 3, replies: 0, reposts: 0, likes: 0 },
+        images: { enabled: true, perRefresh: 1 },
+        profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } },
+    });
+    current.nextImage = '/user/images/one.png';
+    let turn = 0;
+    current.generateRaw = async ({ prompt }) => {
+        turn += 1;
+        const author = (/as @(\w+) only/.exec(prompt) ?? [])[1] ?? 'ada';
+        return JSON.stringify({
+            posts: [{ authorHandle: author, content: `turn ${turn}`, imagePrompt: `image ${turn}`, poll: { question: `q${turn}`, options: ['a', 'b'] } }],
+            interactions: [], follows: [],
+        });
+    };
+    const result = await runRefresh({ feed: emptyFeed() });
+    assert.equal(result.posts.length, 3);
+    assert.equal(result.posts.filter(post => post.poll).length, 1);
+    assert.equal(result.posts.filter(post => post.image).length, 1);
+    assert.equal(current.calls.filter(call => call[0] === 'slash').length, 1);
 });
 
 test('several at once: the requests overlap, the caps still hold, and only the first turn opens the door', async () => {
@@ -676,6 +817,47 @@ test('several at once: the requests overlap, the caps still hold, and only the f
     updateSettings({ incremental: false });
 });
 
+test('parallel turns commit in landing order and revalidate duplicate reactions against current state', async () => {
+    updateSettings({
+        incremental: true,
+        concurrency: 3,
+        quotas: { posts: 3, replies: 0, reposts: 0, likes: 3 },
+        profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } },
+    });
+    const feed = {
+        version: 1,
+        posts: [{ id: 'p0', authorKey: 'persona:me.png', body: 'existing', createdAt: Date.now() }],
+        interactions: [],
+    };
+    current.generateRaw = async ({ prompt }) => {
+        const index = Number((/Post (\d) of 3/.exec(prompt) ?? [])[1]);
+        const author = (/as @(\w+) only/.exec(prompt) ?? [])[1];
+        await new Promise(resolve => setTimeout(resolve, { 1: 30, 2: 5, 3: 15 }[index]));
+        return JSON.stringify({
+            posts: [{ authorHandle: author, content: `turn ${index}` }],
+            interactions: [{ actorHandle: 'bo', type: 'like', targetPostId: 'p0' }],
+            follows: [],
+        });
+    };
+    const landed = [];
+    const result = await runRefresh({ feed, onPartial: partial => landed.push(partial.posts[0]?.body) });
+    assert.deepEqual(landed, ['turn 2', 'turn 3', 'turn 1']);
+    assert.equal(result.interactions.filter(item => item.type === 'like').length, 1);
+});
+
+test('parallel refresh propagates a total provider outage and does not stamp success', async () => {
+    const session = ensureActiveSession();
+    updateSettings({
+        incremental: true,
+        concurrency: 2,
+        quotas: { posts: 2, replies: 0, reposts: 0, likes: 0 },
+        profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } },
+    });
+    current.generateRaw = async () => { throw new Error('provider 401'); };
+    await assert.rejects(() => runRefresh({ feed: emptyFeed() }), /provider 401/);
+    assert.equal(getSession(session.id).lastRefreshAt, 0);
+});
+
 test('regenerateAllProfiles rewrites every invited character in one request, ruling out every current handle', async () => {
     ensureActiveSession();
     current.nextResponse = JSON.stringify({ profiles: [
@@ -721,12 +903,36 @@ test('generatePersonaProfile writes the persona profile from the persona descrip
 });
 
 test('a topic refresh sends the topic and leaves the trending bar alone', async () => {
-    current.nextResponse = GOOD_BATCH;
-    await runRefresh({ feed: emptyFeed(), topic: '#TideWatch' });
+    const session = ensureActiveSession();
+    updateSession(session.id, { trends: [{ topic: '#Old', posts: 2 }] });
+    current.nextResponse = JSON.stringify({
+        posts: [{ authorHandle: 'ada', content: 'off topic' }], interactions: [], follows: [],
+        trends: [{ topic: '#Injected', posts: 3 }],
+    });
+    const result = await runRefresh({ feed: emptyFeed(), topic: '#TideWatch' });
     const sent = JSON.stringify(current.calls.filter(call => call[0] === 'generateRaw').at(-1)[1]);
     assert.match(sent, /# Topic/);
     assert.match(sent, /#TideWatch/);
     assert.match(sent, /Leave \\"trends\\" empty/);
+    assert.equal(result.posts.length, 0);
+    assert.deepEqual(getSession(session.id).trends.map(trend => trend.topic), ['#Old']);
+});
+
+test('a rolling turn cannot substitute another active post author', async () => {
+    updateSettings({
+        incremental: true,
+        concurrency: 1,
+        quotas: { posts: 1, replies: 0, reposts: 0, likes: 0 },
+        profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } },
+    });
+    current.generateRaw = async ({ prompt }) => {
+        const assigned = (/as @(\w+) only/.exec(prompt) || [])[1];
+        const wrong = assigned === 'ada' ? 'bo' : 'ada';
+        return JSON.stringify({ posts: [{ authorHandle: wrong, content: 'wrong turn' }], interactions: [], follows: [] });
+    };
+    const result = await runRefresh({ feed: emptyFeed() });
+    assert.equal(result.posts.length, 0);
+    assert.ok(result.warnings.some(warning => /not allowed to post/.test(warning)));
 });
 
 test('a refresh commits only to the session it started with', async () => {
@@ -757,6 +963,34 @@ test('a saved connection profile is preferred over generateRaw', async () => {
     assert.equal(sent[0].profileId, 'p1');
     assert.ok(Array.isArray(sent[0].messages));
     assert.equal(sent[0].messages[0].role, 'system');
+    assert.equal(current.calls.filter(call => call[0] === 'generateRaw').length, 0);
+});
+
+test('a removed connection profile fails closed instead of switching providers', async () => {
+    current.ConnectionManagerRequestService = {
+        getSupportedProfiles: () => [],
+        async sendRequest() { throw new Error('must not be called'); },
+    };
+    updateSettings({
+        profileId: 'deleted',
+        profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } },
+    });
+    await assert.rejects(() => runRefresh({ feed: emptyFeed() }), /selected connection profile is unavailable/i);
+    assert.equal(getSettings().profileId, 'deleted');
+    assert.equal(current.calls.filter(call => call[0] === 'generateRaw').length, 0);
+});
+
+test('profile discovery failure does not reroute generation or clear the selection', async () => {
+    current.ConnectionManagerRequestService = {
+        getSupportedProfiles() { throw new Error('temporarily unavailable'); },
+        async sendRequest() { throw new Error('must not be called'); },
+    };
+    updateSettings({
+        profileId: 'p1',
+        profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } },
+    });
+    await assert.rejects(() => runRefresh({ feed: emptyFeed() }), /profiles could not be read/);
+    assert.equal(getSettings().profileId, 'p1');
     assert.equal(current.calls.filter(call => call[0] === 'generateRaw').length, 0);
 });
 
@@ -843,6 +1077,15 @@ test('a refresh commits in memory once its upload is durable', async () => {
     assert.ok(getSession(ensureActiveSession().id).lastRefreshAt > 0);
 });
 
+test('a throwing partial observer cannot turn a durable refresh into a failure', async () => {
+    current.nextResponse = GOOD_BATCH;
+    updateSettings({ profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+    const feed = emptyFeed();
+    const result = await runRefresh({ feed, onPartial: () => { throw new Error('render failed'); } });
+    assert.equal(result.posts.length, 1);
+    assert.equal(feed.posts.length, 1);
+});
+
 test('a follow made while the model thinks survives the refresh commit', async () => {
     let release;
     const gate = new Promise(resolve => { release = resolve; });
@@ -865,7 +1108,7 @@ test('a follow made while the model thinks survives the refresh commit', async (
 
 test('a model image prompt cannot inject /imagine flags', async () => {
     current.nextResponse = JSON.stringify({
-        posts: [{ authorHandle: 'ada', content: 'look', imagePrompt: 'quiet=false gallery=true "evil"' }],
+        posts: [{ authorHandle: 'ada', content: 'look', imagePrompt: 'quiet=false gallery=true "evil" {{lastMessage}}' }],
         interactions: [],
         follows: [],
     });
@@ -877,7 +1120,8 @@ test('a model image prompt cannot inject /imagine flags', async () => {
     await runRefresh({ feed: emptyFeed() });
     const command = current.calls.find(call => call[0] === 'slash')[1];
     assert.match(command, /^\/imagine quiet=true gallery=false "/);
-    assert.equal(command.endsWith('\\"evil\\""'), true);
+    assert.doesNotMatch(command, /\{\{lastMessage/);
+    assert.match(command, /\\"evil\\"/);
 });
 
 // --- carryover ------------------------------------------------------------

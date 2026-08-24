@@ -929,6 +929,13 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     font-weight: 600;
 }
 
+.sbtw-poll-option:disabled,
+.sbtw-delete:disabled,
+.sbtw-trend:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
 .sbtw-poll-editor {
     display: flex;
     flex-direction: column;
@@ -1238,10 +1245,33 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 @media (pointer: coarse) {
+    .sbtw-launch,
+    .sbtw-logo,
     .sbtw-nav-item,
+    .sbtw-tab,
     .sbtw-action,
+    .sbtw-avatar-button,
+    .sbtw-delete,
+    .sbtw-mention-item,
+    .sbtw-notification,
     .sbtw-poll-option,
-    .sbtw-btn {
+    .sbtw-btn,
+    .sbtw-shell .sbtw-trend {
+        min-height: 44px;
+    }
+
+    .sbtw-launch,
+    .sbtw-logo,
+    .sbtw-action,
+    .sbtw-avatar-button,
+    .sbtw-btn,
+    .sbtw-delete,
+    .sbtw-shell .sbtw-trend {
+        min-width: 44px;
+    }
+
+    .sbtw-post .sbtw-meta:has(> .sbtw-delete) {
+        padding-right: 3rem;
         min-height: 44px;
     }
 }
@@ -1355,7 +1385,7 @@ body.reduced-motion .sbtw-action-on {
     text-align: left;
 }
 
-.sbtw-trend:hover,
+.sbtw-trend:hover:not(:disabled),
 .sbtw-trend:focus-visible {
     background: color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, transparent);
 }
@@ -1368,4 +1398,3 @@ body.reduced-motion .sbtw-action-on {
     font-size: 0.8em;
     color: var(--sbtw-muted);
 }
-

@@ -148,7 +148,7 @@ function bunnyIcon(className = '') {
     return node;
 }
 
-function button(label, className, onClick, { iconName = '', title = '', ariaLabel = '', pressed = null } = {}) {
+function button(label, className, onClick, { iconName = '', title = '', ariaLabel = '', pressed = null, disabled = false, focusKey = label } = {}) {
     const node = el('button', {
         className,
         attrs: {
@@ -156,6 +156,8 @@ function button(label, className, onClick, { iconName = '', title = '', ariaLabe
             title: title || label,
             'aria-label': ariaLabel || null,
             'aria-pressed': pressed === null ? null : String(pressed),
+            'data-focus-key': focusKey,
+            disabled: disabled ? 'disabled' : null,
         },
         on: { click: onClick },
     }, iconName ? [icon(iconName), el('span', { text: label })] : [el('span', { text: label })]);
@@ -189,7 +191,7 @@ function handleFor(key, snapshot) {
 
 // One pass over the interactions per render, instead of a full scan inside every
 // comparator and every post node. Rebuilt at the top of render().
-const EMPTY_STATS = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0, onReply: new Map() };
+const EMPTY_STATS = { all: [], items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0, onReply: new Map() };
 const EMPTY_REPLY_STATS = { items: [], like: 0, repost: 0, reply: 0, mine: new Map() };
 let byPost = new Map();
 
@@ -198,29 +200,39 @@ function onComment(item) {
     return (item.type === 'like' || item.type === 'repost') && Boolean(item.parentInteractionId);
 }
 
-/**
- * A quote (a repost carrying a comment) gets its own entry in the timeline, so replies to it
- * belong there rather than in the original post's flat reply list.
- */
-function onQuote(item, quoteIds) {
-    return item.type === 'reply' && Boolean(item.parentInteractionId) && quoteIds.has(item.parentInteractionId);
+/** The nearest quote above a reply owns it, however deep the reply/repost-comment chain. */
+function quoteOwner(item, interactionsById) {
+    const seen = new Set();
+    let parent = interactionsById.get(item.parentInteractionId);
+    while (parent && !seen.has(parent.id)) {
+        if (parent.type === 'repost' && parent.content) {
+            return parent.id;
+        }
+        seen.add(parent.id);
+        parent = interactionsById.get(parent.parentInteractionId);
+    }
+    return null;
 }
 
 function buildInteractionMap() {
     const map = new Map();
     const me = personaAccount();
-    const quoteIds = new Set(state.feed.interactions.filter(item => item.type === 'repost' && item.content).map(item => item.id));
+    const interactionsById = new Map(state.feed.interactions.map(item => [item.id, item]));
     for (const item of state.feed.interactions) {
         let entry = map.get(item.postId);
         if (!entry) {
-            entry = { items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0, onReply: new Map() };
+            entry = { all: [], items: [], like: 0, repost: 0, reply: 0, vote: 0, mine: new Map(), latestReplyAt: 0, onReply: new Map() };
             map.set(item.postId, entry);
         }
-        if (onComment(item) || onQuote(item, quoteIds)) {
-            let bucket = entry.onReply.get(item.parentInteractionId);
+        entry.all.push(item);
+        const bucketId = onComment(item)
+            ? item.parentInteractionId
+            : item.type === 'reply' ? quoteOwner(item, interactionsById) : null;
+        if (bucketId) {
+            let bucket = entry.onReply.get(bucketId);
             if (!bucket) {
                 bucket = { items: [], like: 0, repost: 0, reply: 0, mine: new Map() };
-                entry.onReply.set(item.parentInteractionId, bucket);
+                entry.onReply.set(bucketId, bucket);
             }
             bucket.items.push(item);
             bucket[item.type] += 1;
@@ -251,6 +263,10 @@ function interactionsFor(postId) {
     return statsFor(postId).items;
 }
 
+function allInteractionsFor(postId) {
+    return statsFor(postId).all;
+}
+
 function countOf(postId, type) {
     return statsFor(postId)[type] ?? 0;
 }
@@ -263,11 +279,18 @@ function replyStatsFor(postId, replyId) {
     return statsFor(postId).onReply.get(replyId) ?? EMPTY_REPLY_STATS;
 }
 
+function replyBucketOwner(postId, replyId) {
+    for (const [ownerId, bucket] of statsFor(postId).onReply) {
+        if (bucket.items.some(item => item.id === replyId)) {
+            return ownerId;
+        }
+    }
+    return null;
+}
+
 /** The comment with this id on this post: a reply, or a quote of it. Quote replies live in the quote's own bucket. */
 function answerableOn(postId, id) {
-    const stats = statsFor(postId);
-    return stats.items.find(item => isAnswerable(item) && item.id === id)
-        ?? [...stats.onReply.values()].flatMap(bucket => bucket.items).find(item => isAnswerable(item) && item.id === id)
+    return allInteractionsFor(postId).find(item => isAnswerable(item) && item.id === id)
         ?? null;
 }
 
@@ -372,7 +395,7 @@ function visibleTimelineEntries(query = state.timelineSearch) {
                 const repost = bucket.items
                     .filter(item => item.type === 'repost' && relevantReposters.has(item.actorKey))
                     .sort((a, b) => b.createdAt - a.createdAt)[0];
-                const reply = repost ? interactionsFor(post.id).find(item => item.id === replyId) : null;
+                const reply = repost ? answerableOn(post.id, replyId) : null;
                 if (reply) {
                     entries.push({ post, reply, repost, sortAt: repost.createdAt });
                 }
@@ -385,7 +408,7 @@ function visibleTimelineEntries(query = state.timelineSearch) {
         const byId = new Map(state.feed.posts.map(post => [post.id, post]));
         for (const item of state.feed.interactions) {
             if (item.type === 'repost' && item.content && byId.has(item.postId)) {
-                const reply = item.parentInteractionId ? interactionsFor(item.postId).find(other => other.id === item.parentInteractionId) : null;
+                const reply = item.parentInteractionId ? answerableOn(item.postId, item.parentInteractionId) : null;
                 if (item.parentInteractionId && !reply) {
                     continue;
                 }
@@ -402,14 +425,14 @@ function visibleTimelineEntries(query = state.timelineSearch) {
         }
         const trending = entries
             .filter(entry => entry.score > 0 && entry.sortAt >= since)
-            .filter(({ post }) => matchesTimelineQuery(post, interactionsFor(post.id), query))
+            .filter(({ post }) => matchesTimelineSearch(post, query))
             .sort((a, b) => (b.score - a.score) || (b.sortAt - a.sortAt));
         return { entries: trending.slice(0, FEED_LIMIT), total: trending.length };
     }
 
     const order = state.tab === 'main' ? mainComparator(entries, me, following) : (a, b) => b.sortAt - a.sortAt;
     const matches = entries
-        .filter(({ post }) => matchesTimelineQuery(post, interactionsFor(post.id), query))
+        .filter(({ post }) => matchesTimelineSearch(post, query))
         .sort(order);
     const visible = matches.slice(0, FEED_LIMIT);
     const targetPostId = state.replyingTo?.postId;
@@ -421,6 +444,23 @@ function visibleTimelineEntries(query = state.timelineSearch) {
         }
     }
     return { entries: visible, total: matches.length };
+}
+
+/** Search every rendered comment, using live account names instead of stale snapshots. */
+function matchesTimelineSearch(post, query) {
+    if (!String(query ?? '').trim()) {
+        return true;
+    }
+    const comments = allInteractionsFor(post.id)
+        .filter(item => item.type === 'reply' || (item.type === 'repost' && item.content))
+        .map(item => ({
+            ...item,
+            actorSnapshot: accountFor(item.actorKey) ?? item.actorSnapshot,
+        }));
+    return matchesTimelineQuery({
+        ...post,
+        authorSnapshot: accountFor(post.authorKey) ?? post.authorSnapshot,
+    }, comments, query);
 }
 
 function persist() {
@@ -471,15 +511,16 @@ function newDot() {
 function bodyNode(text) {
     const fragment = document.createDocumentFragment();
     const known = handleIndex(state.accounts);
-    const pattern = /@([a-z0-9_]{1,20})/gi;
+    const pattern = /(^|[^a-z0-9_])@([a-z0-9_]{1,20})(?![a-z0-9_])/gi;
     let cursor = 0;
     for (const match of String(text ?? '').matchAll(pattern)) {
-        const account = known.get(match[1].toLowerCase());
+        const account = known.get(match[2].toLowerCase());
         if (!account) {
             continue;
         }
-        if (match.index > cursor) {
-            fragment.append(document.createTextNode(text.slice(cursor, match.index)));
+        const mentionAt = match.index + match[1].length;
+        if (mentionAt > cursor) {
+            fragment.append(document.createTextNode(text.slice(cursor, mentionAt)));
         }
         fragment.append(el('button', {
             className: 'sbtw-mention',
@@ -524,7 +565,12 @@ function pollNode(post) {
         bar.style.setProperty('--sbtw-poll-share', `${share}%`);
         const row = el('button', {
             className: `sbtw-poll-option${selected ? ' sbtw-poll-mine' : ''}`,
-            attrs: { type: 'button', 'aria-pressed': String(selected), disabled: personaAccount() ? null : 'disabled' },
+            attrs: {
+                type: 'button',
+                'aria-pressed': String(selected),
+                'data-focus-key': `poll:${post.id}:${index}`,
+                disabled: personaAccount() && !state.busy ? null : 'disabled',
+            },
             on: { click: () => vote(post, index) },
         }, [
             bar,
@@ -547,13 +593,17 @@ function imageNode(post) {
     }
     // Known dimensions reserve the box before the image arrives, so a re-render cannot shift
     // everything below it once it loads. Measured on first sight and saved with the post.
+    const feed = state.feed;
+    const sessionId = state.session?.id;
     const img = el('img', { attrs: { src: post.image.url, alt: post.image.prompt ?? '', loading: 'lazy', width: post.image.width || null, height: post.image.height || null } });
     if (!post.image.width) {
         img.addEventListener('load', () => {
-            if (img.naturalWidth && img.naturalHeight && !post.image.width) {
+            if (img.naturalWidth && img.naturalHeight && !post.image.width
+                && img.isConnected && state.body?.isConnected && state.feed === feed
+                && state.session?.id === sessionId && !state.busy) {
                 post.image.width = img.naturalWidth;
                 post.image.height = img.naturalHeight;
-                persist();
+                api.saveFeedDebounced(feed, 1200, sessionId);
             }
         }, { once: true });
     }
@@ -574,19 +624,18 @@ let pendingReplyFocus = null;
  * capture phase; window capture runs first, so a sideways swipe that starts in the trend
  * row is kept from reaching it. Nothing is prevented: the row still scrolls natively.
  */
-let trendPanGuardInstalled = false;
+let trendPanGuard = null;
 function installTrendPanGuard() {
-    if (trendPanGuardInstalled || typeof window === 'undefined') {
+    if (trendPanGuard || typeof window === 'undefined') {
         return;
     }
-    trendPanGuardInstalled = true;
     let start = null;
-    window.addEventListener('touchstart', (event) => {
+    const touchstart = (event) => {
         const touch = event.touches?.[0];
         const inRow = touch && event.target instanceof Element && event.target.closest('.sbtw-trends');
         start = inRow && event.touches.length === 1 ? { x: touch.clientX, y: touch.clientY } : null;
-    }, { capture: true, passive: true });
-    window.addEventListener('touchmove', (event) => {
+    };
+    const touchmove = (event) => {
         if (!start || event.touches?.length !== 1) {
             return;
         }
@@ -594,10 +643,24 @@ function installTrendPanGuard() {
         if (Math.abs(touch.clientX - start.x) > Math.abs(touch.clientY - start.y)) {
             event.stopPropagation();
         }
-    }, { capture: true, passive: true });
+    };
     const clear = () => { start = null; };
+    trendPanGuard = { touchstart, touchmove, clear };
+    window.addEventListener('touchstart', touchstart, { capture: true, passive: true });
+    window.addEventListener('touchmove', touchmove, { capture: true, passive: true });
     window.addEventListener('touchend', clear, { capture: true, passive: true });
     window.addEventListener('touchcancel', clear, { capture: true, passive: true });
+}
+
+function removeTrendPanGuard() {
+    if (!trendPanGuard || typeof window === 'undefined') {
+        return;
+    }
+    window.removeEventListener('touchstart', trendPanGuard.touchstart, true);
+    window.removeEventListener('touchmove', trendPanGuard.touchmove, true);
+    window.removeEventListener('touchend', trendPanGuard.clear, true);
+    window.removeEventListener('touchcancel', trendPanGuard.clear, true);
+    trendPanGuard = null;
 }
 
 function replyTargetKey(target) {
@@ -627,7 +690,14 @@ function setReplyTarget(postId, parentInteractionId = null, { toggle = true } = 
 function actionButton(ownerId, me, iconName, count, active, onClick, label, who = null) {
     const button = el('button', {
         className: `sbtw-action${active ? ' sbtw-action-on' : ''}`,
-        attrs: { type: 'button', title: label, 'aria-label': label, 'aria-pressed': String(active), disabled: !me },
+        attrs: {
+            type: 'button',
+            title: label,
+            'aria-label': label,
+            'aria-pressed': String(active),
+            'data-focus-key': `action:${ownerId}:${iconName}`,
+            disabled: !me || state.busy ? 'disabled' : null,
+        },
         on: { click: onClick },
     }, [icon(iconName)]);
     if (!(count > 0)) {
@@ -643,7 +713,7 @@ function actionButton(ownerId, me, iconName, count, active, onClick, label, who 
     const countButton = el('button', {
         className: `sbtw-action-count sbtw-action-who${open ? ' sbtw-action-who-on' : ''}`,
         text: String(count),
-        attrs: { type: 'button', title: who === 'like' ? 'See who liked this' : 'See who reposted this', 'aria-label': `${count} ${who === 'like' ? 'likes' : 'reposts'}, see who`, 'aria-expanded': String(open) },
+        attrs: { type: 'button', title: who === 'like' ? 'See who liked this' : 'See who reposted this', 'aria-label': `${count} ${who === 'like' ? 'likes' : 'reposts'}, see who`, 'aria-expanded': String(open), 'data-focus-key': `engagement:${ownerId}:${who}` },
         on: { click: () => { state.engagementFor = open ? null : key; render(); } },
     });
     return el('span', { className: 'sbtw-action-group' }, [button, countButton]);
@@ -736,11 +806,15 @@ function replyNode(reply) {
                         iconName: 'fa-comment',
                         ariaLabel: `Reply to @${handle}`,
                         pressed: targeted,
+                        disabled: state.busy,
+                        focusKey: `reply:${reply.id}`,
                     }) : null,
                 me?.key === reply.actorKey
                     ? button('Delete', 'sbtw-action sbtw-action-danger', () => deleteReply(reply), {
                         iconName: 'fa-trash',
                         ariaLabel: 'Delete your reply',
+                        disabled: state.busy,
+                        focusKey: `delete-reply:${reply.id}`,
                     })
                     : null,
             ]),
@@ -752,6 +826,17 @@ function replyNode(reply) {
 /** Someone reposted a comment: the reposter speaks first if they added a comment, then the comment, then the post it was on. */
 function repostedReplyNode({ post, reply, repost }) {
     const actor = accountFor(repost.actorKey);
+    const me = personaAccount();
+    const stats = replyStatsFor(post.id, repost.id);
+    const liked = Boolean(stats.mine.get('like'));
+    const reposted = Boolean(stats.mine.get('repost'));
+    const targeted = isReplyTarget(post.id, repost.id);
+    const target = state.replyingTo?.parentInteractionId
+        ? answerableOn(post.id, state.replyingTo.parentInteractionId)
+        : null;
+    const composerHere = state.replyingTo?.postId === post.id
+        && (targeted || (target?.type === 'reply' && replyBucketOwner(post.id, target.id) === repost.id));
+    const replies = stats.items.filter(item => item.type === 'reply').sort((a, b) => a.createdAt - b.createdAt);
     return el('article', { className: 'sbtw-post sbtw-reply-repost', attrs: { 'data-repost-id': repost.id } }, [
         el('div', { className: 'sbtw-repost-context' }, [
             icon('fa-retweet'),
@@ -775,6 +860,14 @@ function repostedReplyNode({ post, reply, repost }) {
         ]) : null,
         replyNode(reply),
         el('div', { className: 'sbtw-quote-card' }, [postNode(post, null, { compact: true })]),
+        repost.content ? el('div', { className: 'sbtw-actions' }, [
+            actionButton(repost.id, me, 'fa-heart', stats.like, liked, () => toggle(post.id, 'like', repost), liked ? 'Unlike' : 'Like', 'like'),
+            actionButton(repost.id, me, 'fa-retweet', stats.repost, reposted, () => toggle(post.id, 'repost', repost), reposted ? 'Undo repost' : 'Repost', 'repost'),
+            actionButton(repost.id, me, 'fa-comment', stats.reply, targeted, () => setReplyTarget(post.id, repost.id), 'Reply'),
+        ]) : null,
+        repost.content ? engagementNode(repost.id, stats.items) : null,
+        repost.content && composerHere ? replyComposer(post) : null,
+        repost.content && replies.length ? el('div', { className: 'sbtw-replies' }, replies.map(replyNode)) : null,
     ]);
 }
 
@@ -789,6 +882,10 @@ function postNode(post, repost = null, { compact = false } = {}) {
     const replies = compact ? [] : interactionsFor(post.id)
         .filter(item => item.type === 'reply')
         .sort((a, b) => a.createdAt - b.createdAt);
+    const replyParent = !compact && state.replyingTo?.postId === post.id && state.replyingTo.parentInteractionId
+        ? answerableOn(post.id, state.replyingTo.parentInteractionId)
+        : null;
+    const replyOwner = replyParent ? replyBucketOwner(post.id, replyParent.id) : null;
 
     const fresh = !compact && isNewToMe(post, post.authorKey);
     return el('article', { className: `sbtw-post${compact ? ' sbtw-post-compact' : ''}${fresh ? ' sbtw-post-new' : ''}`, attrs: compact ? {} : { 'data-post-id': post.id } }, [
@@ -813,7 +910,7 @@ function postNode(post, repost = null, { compact = false } = {}) {
                     mine
                         ? el('button', {
                             className: 'sbtw-delete',
-                            attrs: { type: 'button', title: 'Delete post', 'aria-label': 'Delete post' },
+                            attrs: { type: 'button', title: 'Delete post', 'aria-label': 'Delete post', 'data-focus-key': `delete-post:${post.id}`, disabled: state.busy ? 'disabled' : null },
                             on: { click: () => deletePost(post) },
                         }, [icon('fa-ellipsis')])
                         : null,
@@ -823,7 +920,8 @@ function postNode(post, repost = null, { compact = false } = {}) {
                 imageNode(post),
                 compact ? null : actionsNode(post),
                 compact ? null : engagementNode(post.id, interactionsFor(post.id)),
-                !compact && state.replyingTo?.postId === post.id && !statsFor(post.id).onReply.has(state.replyingTo?.parentInteractionId)
+                !compact && state.replyingTo?.postId === post.id
+                    && (!state.replyingTo.parentInteractionId || (replyParent?.type === 'reply' && !replyOwner))
                     ? replyComposer(post)
                     : null,
                 replies.length ? el('div', { className: 'sbtw-replies' }, replies.map(replyNode)) : null,
@@ -840,6 +938,11 @@ function quoteNode(post, repost) {
     const liked = Boolean(stats.mine.get('like'));
     const reposted = Boolean(stats.mine.get('repost'));
     const targeted = isReplyTarget(post.id, repost.id);
+    const target = state.replyingTo?.parentInteractionId
+        ? answerableOn(post.id, state.replyingTo.parentInteractionId)
+        : null;
+    const composerHere = state.replyingTo?.postId === post.id
+        && (targeted || (target?.type === 'reply' && replyBucketOwner(post.id, target.id) === repost.id));
     const replies = stats.items.filter(item => item.type === 'reply').sort((a, b) => a.createdAt - b.createdAt);
     return el('article', { className: 'sbtw-post sbtw-quote', attrs: { 'data-repost-id': repost.id } }, [
         el('div', { className: 'sbtw-repost-context' }, [
@@ -868,7 +971,7 @@ function quoteNode(post, repost) {
                     actionButton(repost.id, me, 'fa-comment', stats.reply, targeted, () => setReplyTarget(post.id, repost.id), 'Reply'),
                 ]),
                 engagementNode(repost.id, stats.items),
-                targeted ? replyComposer(post) : null,
+                composerHere ? replyComposer(post) : null,
                 replies.length ? el('div', { className: 'sbtw-replies' }, replies.map(replyNode)) : null,
             ]),
         ]),
@@ -887,6 +990,7 @@ function replyComposer(post) {
             rows: '2',
             maxlength: String(REPLY_MAX_CHARS),
             placeholder: parentHandle ? `Reply to @${parentHandle}...` : `Reply as ${me?.name ?? 'you'}...`,
+            'data-focus-key': `reply-composer:${key}`,
             'aria-label': parentHandle
                 ? `Reply to @${parentHandle} as ${me?.name ?? 'you'}`
                 : `Reply as ${me?.name ?? 'you'}`,
@@ -910,7 +1014,7 @@ function replyComposer(post) {
             return;
         }
         addReply(post, text, target.parentInteractionId);
-    });
+    }, { disabled: state.busy, focusKey: `send-reply:${key}` });
     return el('div', { className: 'sbtw-reply-composer' }, [
         parent ? el('div', { className: 'sbtw-replying', text: `Replying to @${parentHandle}` }) : null,
         field,
@@ -1038,7 +1142,7 @@ function composerBar(canPost, postField = null) {
             : null,
         el('button', {
             className: 'sbtw-btn sbtw-btn-primary',
-            attrs: { type: 'button', disabled: state.busy ? 'disabled' : null },
+            attrs: { type: 'button', disabled: state.busy ? 'disabled' : null, 'aria-label': state.busy ? 'Refresh in progress' : 'Refresh timeline', 'data-focus-key': 'refresh' },
             on: { click: () => refresh() },
         }, [icon(state.busy ? 'fa-spinner fa-spin' : 'fa-rotate'), el('span', { text: state.busy ? 'Working...' : 'Refresh' })]),
         el('span', { className: 'sbtw-spacer' }),
@@ -1048,7 +1152,7 @@ function composerBar(canPost, postField = null) {
             text: state.status,
             attrs: { role: 'status', 'aria-live': 'polite' },
         }),
-        canPost ? button('Post', 'sbtw-btn sbtw-btn-primary sbtw-post-button', () => publish(postField.value)) : null,
+        canPost ? button('Post', 'sbtw-btn sbtw-btn-primary sbtw-post-button', () => publish(postField.value), { disabled: state.busy, focusKey: 'publish' }) : null,
     ]);
 }
 
@@ -1063,7 +1167,7 @@ function composer() {
 
     const field = el('textarea', {
         className: 'sbtw-input sbtw-composer-input',
-        attrs: { rows: '3', maxlength: String(POST_MAX_CHARS), placeholder: "What's happening?", 'aria-label': "What's happening?" },
+        attrs: { rows: '3', maxlength: String(POST_MAX_CHARS), placeholder: "What's happening?", 'aria-label': "What's happening?", 'data-focus-key': 'post-composer' },
     });
     field.value = state.draft.text;
     field.addEventListener('input', () => { state.draft.text = field.value; });
@@ -1079,7 +1183,7 @@ function composer() {
     if (state.draft.poll) {
         const rows = state.draft.poll.map((text, index) => el('input', {
             className: 'sbtw-input',
-            attrs: { type: 'text', maxlength: '120', placeholder: `Option ${index + 1}`, value: text },
+            attrs: { type: 'text', maxlength: '120', placeholder: `Option ${index + 1}`, value: text, 'data-focus-key': `poll-option:${index}` },
             on: {
                 input: (event) => { state.draft.poll[index] = event.target.value; },
             },
@@ -1106,11 +1210,8 @@ function composer() {
 
 function timelineView() {
     // Looking at the timeline clears the dots for next time; this visit keeps the ones it opened with.
-    const latest = Math.max(
-        0,
-        ...state.feed.posts.map(post => post.createdAt),
-        ...state.feed.interactions.filter(item => item.type === 'reply').map(item => item.createdAt),
-    );
+    const latestReply = state.feed.interactions.reduce((latest, item) => item.type === 'reply' ? Math.max(latest, item.createdAt) : latest, 0);
+    const latest = state.feed.posts.reduce((value, post) => Math.max(value, post.createdAt), latestReply);
     if (state.session && latest > (state.session.timelineSeenAt ?? 0)) {
         state.session = api.updateSession(state.session.id, { timelineSeenAt: latest });
     }
@@ -1135,6 +1236,7 @@ function timelineView() {
             'aria-label': 'Search this timeline',
             autocomplete: 'off',
             value: state.timelineSearch,
+            'data-focus-key': 'timeline-search',
         },
     });
     search.value = state.timelineSearch;
@@ -1184,10 +1286,10 @@ function timelineView() {
     if (state.tab === 'trending') {
         const trends = state.session?.trends ?? [];
         installTrendPanGuard();
-        trendsBar = el('div', { className: 'sbtw-trends', attrs: { role: 'list', 'aria-label': 'Trending topics' } }, trends.length
+        trendsBar = el('div', { className: 'sbtw-trends', attrs: { 'aria-label': 'Trending topics' } }, trends.length
             ? trends.map(trend => el('button', {
                 className: 'sbtw-trend',
-                attrs: { type: 'button', role: 'listitem', title: `Write a round of posts about ${trend.topic}`, disabled: state.busy ? 'disabled' : null },
+                attrs: { type: 'button', title: `Write a round of posts about ${trend.topic}`, disabled: state.busy ? 'disabled' : null, 'data-focus-key': `trend:${trend.topic}` },
                 // A tap runs a refresh about the topic (same post cap as Refresh) and shows the matches in Main as they land.
                 on: { click: () => { if (state.busy) { return; } state.tab = 'main'; state.timelineSearch = trend.topic; void refresh({ topic: trend.topic }); } },
             }, [
@@ -1210,7 +1312,7 @@ function tabButton(label, value) {
     return el('button', {
         className: `sbtw-tab${state.tab === value ? ' sbtw-tab-on' : ''}`,
         text: label,
-        attrs: { type: 'button', 'aria-pressed': String(state.tab === value) },
+        attrs: { type: 'button', 'aria-pressed': String(state.tab === value), 'data-focus-key': `timeline-tab:${value}` },
         on: { click: () => { state.tab = value; render(); } },
     });
 }
@@ -1253,12 +1355,14 @@ function profileView() {
                 canFollow
                     ? button(following.has(account.key) ? 'Following' : 'Follow',
                         `sbtw-btn ${following.has(account.key) ? 'sbtw-btn-quiet' : 'sbtw-btn-primary'}`,
-                        () => toggleFollow(account.key))
+                        () => toggleFollow(account.key), { disabled: state.busy, focusKey: `follow:${account.key}` })
                     : null,
                 account.kind === KIND_CHARACTER
                     ? button('New profile', 'sbtw-btn sbtw-btn-quiet', () => void rewriteProfile(account.key), {
                         iconName: 'fa-wand-magic-sparkles',
                         title: 'Ask the posts connection for a fresh handle, name and bio for this character',
+                        disabled: state.busy,
+                        focusKey: `rewrite-profile:${account.key}`,
                     })
                     : null,
             ]),
@@ -1289,6 +1393,53 @@ function forgetStrangers() {
     } catch (error) {
         console.error('[Hopper] strangers could not be cleared', error);
         toast(error?.message || 'The strangers could not be cleared.', 'error');
+    }
+}
+
+/** Writes the persona profile under the same cancellable session-wide busy state as a refresh. */
+async function writePersonaProfile() {
+    if (state.busy || !state.session) {
+        return;
+    }
+    const sessionId = state.session.id;
+    const { epoch, signal } = freshSignal();
+    state.busy = true;
+    state.status = 'Writing your profile...';
+    render();
+    try {
+        const profile = await api.generatePersonaProfile(sessionId, { signal });
+        if (!isLive(epoch) || state.session?.id !== sessionId) {
+            return;
+        }
+        if (!profile) {
+            toast('The model did not return a usable profile. Try again.', 'warning');
+            return;
+        }
+        const current = api.getSession(sessionId);
+        state.session = api.updateSession(sessionId, {
+            personaProfile: { ...(current?.personaProfile ?? {}), ...profile },
+        });
+        try {
+            await refreshAccounts(sessionId);
+        } catch (error) {
+            console.error('[Hopper] the saved persona profile could not be refreshed in the account list', error);
+        }
+        if (!isLive(epoch) || state.session?.id !== sessionId) {
+            return;
+        }
+        toast(`Profile written: ${profile.name} @${profile.handle}`, 'success');
+    } catch (error) {
+        if (signal.aborted || error?.name === 'AbortError') {
+            return;
+        }
+        console.error('[Hopper] persona profile generation failed', error);
+        toast(error?.message || 'The profile could not be written - check your connection settings.', 'error');
+    } finally {
+        if (isLive(epoch) && state.session?.id === sessionId) {
+            state.busy = false;
+            state.status = '';
+            render();
+        }
     }
 }
 
@@ -1433,7 +1584,10 @@ function notificationsView() {
         return el('div', { className: 'sbtw-empty', text: 'Set a persona to get notifications.' });
     }
     // Looking at the view clears the badge; rows newer than the previous visit stay marked until you leave.
-    const latest = Math.max(0, ...Object.values(groups).flat().map(item => item.createdAt));
+    const latest = Object.values(groups).reduce(
+        (value, list) => list.reduce((inner, item) => Math.max(inner, item.createdAt), value),
+        0,
+    );
     if (latest > (state.session.notificationsSeenAt ?? 0)) {
         state.session = api.updateSession(state.session.id, { notificationsSeenAt: latest });
     }
@@ -1447,6 +1601,7 @@ function notificationsView() {
                 type: 'button',
                 'aria-pressed': String(state.notifTab === value),
                 'aria-label': `${label}, ${groups[value].length} total${fresh ? `, ${fresh} new` : ''}`,
+                'data-focus-key': `notification-tab:${value}`,
             },
             on: { click: () => { state.notifTab = value; render(); } },
         }, [el('span', { text: `${label} ${groups[value].length}` }), fresh ? badgeNode(fresh) : null]);
@@ -1470,7 +1625,7 @@ function notificationsView() {
                     pendingReplyFocus = null;
                     render();
                 }
-                scrollToPost(item.postId);
+                scrollToNotification(item);
             },
         },
     }, [
@@ -1495,6 +1650,9 @@ function notificationsView() {
 // --- settings view --------------------------------------------------------
 
 function field(label, control, hint = '') {
+    if (control instanceof Element && control.matches('input, textarea, select, button') && !control.dataset.focusKey) {
+        control.dataset.focusKey = `field:${label}`;
+    }
     return el('label', { className: 'sbtw-field' }, [
         el('span', { className: 'sbtw-field-label', text: label }),
         control,
@@ -1511,7 +1669,7 @@ function numberInput(value, min, max, onChange) {
 }
 
 function checkbox(label, checked, onChange, visual = null) {
-    const box = el('input', { attrs: { type: 'checkbox', checked: checked ? 'checked' : null } });
+    const box = el('input', { attrs: { type: 'checkbox', checked: checked ? 'checked' : null, 'data-focus-key': `check:${label}` } });
     box.checked = checked;
     box.addEventListener('change', () => onChange(box.checked));
     return el('label', { className: 'sbtw-check' }, [box, visual, el('span', { text: label })]);
@@ -1523,6 +1681,7 @@ function settingsView() {
     const session = state.session;
     const characters = context.characters ?? [];
     const profiles = api.listConnectionProfiles();
+    const profileAvailable = !settings.profileId || profiles.some(profile => profile.id === settings.profileId);
     const personas = api.listPersonas();
     const notes = api.getScenarioNotes(session.personaId);
     const groups = (context.groups ?? []).filter(group => Array.isArray(group.members) && group.members.length);
@@ -1536,6 +1695,7 @@ function settingsView() {
             });
     };
     const save = (patch) => { api.updateSettings(patch); refreshSettings(); };
+    const savePart = (name, patch) => save({ [name]: { ...api.getSettings()[name], ...patch } });
     const saveSession = (patch) => {
         const updated = api.updateSession(session.id, patch);
         if (state.session?.id === session.id) {
@@ -1576,7 +1736,10 @@ function settingsView() {
         className: 'sbtw-input',
         on: { change: (event) => save({ profileId: event.target.value }) },
     }, [
-        el('option', { text: profiles.length ? 'Use the current connection' : 'Connection Manager is off', attrs: { value: '' } }),
+        el('option', { text: profiles.length ? 'Use the current connection' : 'Connection Manager is off', attrs: { value: '', selected: !settings.profileId ? 'selected' : null } }),
+        !profileAvailable
+            ? el('option', { text: 'Selected connection profile is unavailable', attrs: { value: settings.profileId, selected: 'selected', disabled: 'disabled' } })
+            : null,
         ...profiles.map(profile => el('option', {
             text: profile.name,
             attrs: { value: profile.id, selected: profile.id === settings.profileId ? 'selected' : null },
@@ -1630,6 +1793,7 @@ function settingsView() {
             placeholder: 'Search characters or tags',
             autocomplete: 'off',
             'aria-label': 'Search characters or tags',
+            'data-focus-key': 'character-search',
         },
     });
     const filterInvites = () => {
@@ -1658,7 +1822,7 @@ function settingsView() {
 
     const activeMode = el('select', {
         className: 'sbtw-input',
-        on: { change: (event) => save({ active: { ...settings.active, mode: event.target.value } }) },
+        on: { change: (event) => savePart('active', { mode: event.target.value }) },
     }, ['range', 'exact', 'all'].map(mode => el('option', {
         text: { range: 'A random number each time', exact: 'Always the same number', all: 'Everyone invited' }[mode],
         attrs: { value: mode, selected: mode === settings.active.mode ? 'selected' : null },
@@ -1697,35 +1861,14 @@ function settingsView() {
         ]) : null,
 
         el('h3', { text: 'Persona profile' }),
-        (() => {
-            // Asks the posts connection to write name, handle, bio and location from the persona description.
-            const write = button('Write it with the model', 'sbtw-btn sbtw-btn-quiet', async () => {
-                if (write.disabled) {
-                    return;
-                }
-                write.disabled = true;
-                const label = write.querySelector('span');
-                const previous = label.textContent;
-                label.textContent = 'Writing...';
-                const { signal } = freshSignal();
-                try {
-                    const profile = await api.generatePersonaProfile(session.id, { signal });
-                    if (!profile) {
-                        toast('The model did not return a usable profile. Try again.', 'warning');
-                        return;
-                    }
-                    saveProfile(profile);
-                    toast(`Profile written: ${profile.name} @${profile.handle}`, 'success');
-                } catch (error) {
-                    console.error('[Hopper] persona profile generation failed', error);
-                    toast(error?.message || 'The profile could not be written - check your connection settings.', 'error');
-                } finally {
-                    write.disabled = false;
-                    label.textContent = previous;
-                }
-            }, { iconName: 'fa-wand-magic-sparkles', title: 'Ask the posts connection to write this profile from your persona description' });
-            return el('div', { className: 'sbtw-composer-bar' }, [write, el('span', { className: 'sbtw-hint', text: 'Uses your persona description; you can edit the result.' })]);
-        })(),
+        el('div', { className: 'sbtw-composer-bar' }, [
+            button(state.status === 'Writing your profile...' ? 'Writing...' : 'Write it with the model', 'sbtw-btn sbtw-btn-quiet', () => void writePersonaProfile(), {
+                iconName: 'fa-wand-magic-sparkles',
+                title: 'Ask the posts connection to write this profile from your persona description',
+                disabled: state.busy,
+            }),
+            el('span', { className: 'sbtw-hint', text: 'Uses your persona description; you can edit the result.' }),
+        ]),
         el('div', { className: 'sbtw-row' }, [
             field('Display name', el('input', {
                 className: 'sbtw-input',
@@ -1761,30 +1904,36 @@ function settingsView() {
             invites,
             el('span', { className: 'sbtw-hint', text: 'Only invited characters take part in a refresh.' }),
         ]),
-        field('Profiles', el('div', { className: 'sbtw-button-row' }, [
-            button('New profiles for everyone', 'sbtw-btn sbtw-btn-quiet', () => void rewriteAllProfiles(), {
-                iconName: 'fa-wand-magic-sparkles',
-                title: 'Ask the posts connection for a fresh handle, name and bio for every invited character',
-            }),
-        ]), 'One request rewrites the handle, name and bio of every invited character; the current handles are ruled out. One character at a time: New profile on their page.'),
+        el('div', { className: 'sbtw-field' }, [
+            el('span', { className: 'sbtw-field-label', text: 'Profiles' }),
+            el('div', { className: 'sbtw-button-row' }, [
+                button('New profiles for everyone', 'sbtw-btn sbtw-btn-quiet', () => void rewriteAllProfiles(), {
+                    iconName: 'fa-wand-magic-sparkles',
+                    title: 'Ask the posts connection for a fresh handle, name and bio for every invited character',
+                    disabled: state.busy,
+                }),
+            ]),
+            el('span', { className: 'sbtw-hint', text: 'One request rewrites the handle, name and bio of every invited character; the current handles are ruled out. One character at a time: New profile on their page.' }),
+        ]),
         checkbox('Let strangers join in', session.ambient, value => saveSession({ ambient: value })),
         el('p', { className: 'sbtw-hint', text: `Random passers-by the model invents, not part of the cast. They mostly reply and like, get a profile, and come back later.${session.strangers.length ? ` ${session.strangers.length} so far.` : ''}` }),
         el('div', { className: 'sbtw-button-row' }, [
             button('Forget these strangers', 'sbtw-btn sbtw-btn-quiet', () => forgetStrangers(), {
                 iconName: 'fa-arrows-rotate',
                 title: 'Drop the passers-by this timeline keeps bringing back; the next refresh invents new ones',
+                disabled: state.busy,
             }),
         ]),
         el('p', { className: 'sbtw-hint', text: 'Their old posts stay as they are. The next refresh introduces a fresh set.' }),
         field('Accounts per refresh', activeMode),
         settings.active.mode === 'range'
             ? el('div', { className: 'sbtw-row' }, [
-                field('Fewest', numberInput(settings.active.min, 1, 100, value => save({ active: { ...settings.active, min: value } }))),
-                field('Most', numberInput(settings.active.max, 1, 100, value => save({ active: { ...settings.active, max: value } }))),
+                field('Fewest', numberInput(settings.active.min, 1, 100, value => savePart('active', { min: value }))),
+                field('Most', numberInput(settings.active.max, 1, 100, value => savePart('active', { max: value }))),
             ])
             : null,
         settings.active.mode === 'exact'
-            ? field('How many', numberInput(settings.active.count, 1, 100, value => save({ active: { ...settings.active, count: value } })))
+            ? field('How many', numberInput(settings.active.count, 1, 100, value => savePart('active', { count: value })))
             : null,
 
         el('h3', { text: 'Connection' }),
@@ -1794,10 +1943,10 @@ function settingsView() {
 
         el('h3', { text: 'How much each refresh makes' }),
         el('div', { className: 'sbtw-row' }, [
-            field('Posts', numberInput(settings.quotas.posts, 0, 100, value => save({ quotas: { ...settings.quotas, posts: value } }))),
-            field('Replies', numberInput(settings.quotas.replies, 0, 200, value => save({ quotas: { ...settings.quotas, replies: value } }))),
-            field('Reposts', numberInput(settings.quotas.reposts, 0, 100, value => save({ quotas: { ...settings.quotas, reposts: value } }))),
-            field('Likes', numberInput(settings.quotas.likes, 0, 500, value => save({ quotas: { ...settings.quotas, likes: value } }))),
+            field('Posts', numberInput(settings.quotas.posts, 0, 100, value => savePart('quotas', { posts: value }))),
+            field('Replies', numberInput(settings.quotas.replies, 0, 200, value => savePart('quotas', { replies: value }))),
+            field('Reposts', numberInput(settings.quotas.reposts, 0, 100, value => savePart('quotas', { reposts: value }))),
+            field('Likes', numberInput(settings.quotas.likes, 0, 500, value => savePart('quotas', { likes: value }))),
         ]),
         checkbox('Let accounts make polls', settings.polls, value => save({ polls: value })),
         checkbox('One post at a time', settings.incremental, value => save({ incremental: value })),
@@ -1808,16 +1957,16 @@ function settingsView() {
         el('p', { className: 'sbtw-hint', text: 'Each request writes a single post and the reactions to it, and the timeline fills in as they land. More requests than the batch, but the first post shows up in seconds. Posts above is how many.' }),
 
         el('h3', { text: 'Pictures' }),
-        checkbox('Generate images for some posts', settings.images.enabled, value => save({ images: { ...settings.images, enabled: value } })),
+        checkbox('Generate images for some posts', settings.images.enabled, value => savePart('images', { enabled: value })),
         settings.images.enabled
-            ? field('Images per refresh', numberInput(settings.images.perRefresh, 0, 50, value => save({ images: { ...settings.images, perRefresh: value } })),
+            ? field('Images per refresh', numberInput(settings.images.perRefresh, 0, 50, value => savePart('images', { perRefresh: value })),
                 'Uses your existing image setup. A failed image just posts the text.')
             : null,
         settings.images.enabled
             ? field('Image directions', el('textarea', {
                 className: 'sbtw-input',
                 attrs: { rows: '3', maxlength: '4000', placeholder: 'Leave blank for the default.' },
-                on: { change: (event) => save({ images: { ...settings.images, instructions: event.target.value } }) },
+                on: { change: (event) => savePart('images', { instructions: event.target.value }) },
             }, [document.createTextNode(settings.images.instructions)]))
             : null,
 
@@ -1831,23 +1980,23 @@ function settingsView() {
 
         el('h3', { text: 'How much history it reads' }),
         el('div', { className: 'sbtw-row' }, [
-            field('Hours back', numberInput(settings.history.hours, 1, 720, value => save({ history: { ...settings.history, hours: value } }))),
-            field('Posts', numberInput(settings.history.posts, 1, 100, value => save({ history: { ...settings.history, posts: value } }))),
-            field('Replies per post', numberInput(settings.history.replies, 0, 12, value => save({ history: { ...settings.history, replies: value } }))),
+            field('Hours back', numberInput(settings.history.hours, 1, 720, value => savePart('history', { hours: value }))),
+            field('Posts', numberInput(settings.history.posts, 1, 100, value => savePart('history', { posts: value }))),
+            field('Replies per post', numberInput(settings.history.replies, 0, 12, value => savePart('history', { replies: value }))),
         ]),
         el('p', { className: 'sbtw-hint', text: 'What the model is shown of the timeline so far. This is most of every request, and it does not depend on how much a refresh writes - so a long window makes a small refresh just as slow and just as expensive. Raise it for longer memory, lower it for quicker, cheaper refreshes.' }),
 
         el('h3', { text: 'The chat you have open' }),
-        checkbox('Let characters react to the roleplay', settings.scene.enabled, value => save({ scene: { ...settings.scene, enabled: value } })),
+        checkbox('Let characters react to the roleplay', settings.scene.enabled, value => savePart('scene', { enabled: value })),
         el('p', { className: 'sbtw-hint', text: 'Sends the last few messages of the chat you have open to this timeline\'s model, so the characters in that scene can post about their own day. Only they may mention it. Off by default: with it on, chat text leaves the chat and goes wherever the connection above points.' }),
 
         el('h3', { text: 'Feeding it back into chats' }),
-        checkbox('Mention recent activity in chats', settings.carry.enabled, value => save({ carry: { ...settings.carry, enabled: value } })),
+        checkbox('Mention recent activity in chats', settings.carry.enabled, value => savePart('carry', { enabled: value })),
         settings.carry.enabled
             ? el('div', { className: 'sbtw-row' }, [
-                field('Look back (hours)', numberInput(settings.carry.hours, 1, 720, value => save({ carry: { ...settings.carry, hours: value } }))),
-                field('At most', numberInput(settings.carry.items, 1, 50, value => save({ carry: { ...settings.carry, items: value } }))),
-                field('Depth', numberInput(settings.carry.depth, 0, 100, value => save({ carry: { ...settings.carry, depth: value } }))),
+                field('Look back (hours)', numberInput(settings.carry.hours, 1, 720, value => savePart('carry', { hours: value }))),
+                field('At most', numberInput(settings.carry.items, 1, 50, value => savePart('carry', { items: value }))),
+                field('Depth', numberInput(settings.carry.depth, 0, 100, value => savePart('carry', { depth: value }))),
             ])
             : null,
 
@@ -1859,8 +2008,8 @@ function settingsView() {
         el('h3', { text: 'Reset or delete' }),
         el('p', { className: 'sbtw-hint', text: 'Reset clears posts, replies, likes, reposts and votes; profiles, follows and settings stay. Delete removes this whole timeline; other timelines and character profiles stay.' }),
         el('div', { className: 'sbtw-button-row' }, [
-            button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetTimeline()),
-            button('Delete this timeline', 'sbtw-btn sbtw-btn-danger', () => void deleteTimeline(), { iconName: 'fa-trash' }),
+            button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetTimeline(), { disabled: state.busy }),
+            button('Delete this timeline', 'sbtw-btn sbtw-btn-danger', () => void deleteTimeline(), { iconName: 'fa-trash', disabled: state.busy }),
         ]),
     ]);
 }
@@ -1871,7 +2020,7 @@ function navButton(label, iconName, view, { badge = 0 } = {}) {
     return el('button', {
         className: `sbtw-nav-item${state.view === view ? ' sbtw-nav-on' : ''}`,
         // Mobile hides the label span, so the name must live on the button too.
-        attrs: { type: 'button', 'aria-label': badge ? `${label}, ${badge} new` : label, 'aria-current': state.view === view ? 'page' : null },
+        attrs: { type: 'button', 'aria-label': badge ? `${label}, ${badge} new` : label, 'aria-current': state.view === view ? 'page' : null, 'data-focus-key': `nav:${view}` },
         on: {
             click: () => {
                 state.view = view;
@@ -1913,7 +2062,7 @@ function whoToFollow() {
                 el('button', { className: 'sbtw-name', text: account.name, attrs: { type: 'button' }, on: { click: () => showProfile(account.key) } }),
                 el('span', { className: 'sbtw-handle', text: `@${account.handle}` }),
             ]),
-            button('Follow', 'sbtw-btn sbtw-btn-quiet', () => toggleFollow(account.key)),
+            button('Follow', 'sbtw-btn sbtw-btn-quiet', () => toggleFollow(account.key), { disabled: state.busy, focusKey: `follow:${account.key}` }),
         ])),
     ]);
 }
@@ -2053,7 +2202,7 @@ function sessionBar() {
     const sessions = api.listSessions();
     const select = el('select', {
         className: 'sbtw-input sbtw-session-select',
-        attrs: { 'aria-label': 'Timeline session' },
+        attrs: { 'aria-label': 'Timeline session', 'data-focus-key': 'session' },
         on: { change: event => void switchSession(event.target.value) },
     }, sessions.map(session => el('option', {
         text: `${session.name} · ${personas.get(session.personaId) ?? 'Unassigned'}`,
@@ -2065,10 +2214,49 @@ function sessionBar() {
     ]);
 }
 
+function focusedControl(root) {
+    const active = document.activeElement;
+    const key = active instanceof HTMLElement && root.contains(active) ? active.dataset.focusKey : '';
+    if (!key) {
+        return null;
+    }
+    const card = active.closest('[data-post-id], [data-reply-id], [data-repost-id]');
+    const scopeSelector = card ? anchorSelector(card) : '';
+    const scopeIndex = card ? [...root.querySelectorAll(scopeSelector)].indexOf(card) : 0;
+    const scope = card ?? root;
+    const matches = [...scope.querySelectorAll(`[data-focus-key="${CSS.escape(key)}"]`)];
+    return {
+        key,
+        index: matches.indexOf(active),
+        scope: scopeSelector,
+        scopeIndex,
+        start: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+        end: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+        direction: active.selectionDirection,
+        value: typeof active.selectionStart === 'number' ? active.value : null,
+    };
+}
+
+function restoreFocusedControl(root, saved) {
+    const scope = saved?.scope ? root.querySelectorAll(saved.scope)[saved.scopeIndex] : root;
+    const node = scope?.querySelectorAll(`[data-focus-key="${CSS.escape(saved?.key ?? '')}"]`)[saved?.index];
+    if (!(node instanceof HTMLElement)) {
+        return;
+    }
+    if (saved.value !== null) {
+        node.value = saved.value;
+    }
+    node.focus({ preventScroll: true });
+    if (saved.start !== null && typeof node.setSelectionRange === 'function') {
+        node.setSelectionRange(saved.start, saved.end, saved.direction ?? 'none');
+    }
+}
+
 function render() {
     if (!state.body) {
         return;
     }
+    const focus = focusedControl(state.body);
     const oldMain = state.body.querySelector('.sbtw-main');
     const anchor = oldMain?.dataset.scrollKey ? scrollAnchorOf(oldMain) : null;
     if (oldMain?.dataset.scrollKey) {
@@ -2094,7 +2282,7 @@ function render() {
         // The brand mark: the bunny at the head of the nav, a tap back to the top of the timeline.
         el('button', {
             className: 'sbtw-logo',
-            attrs: { type: 'button', 'aria-label': 'Hopper', title: 'Hopper - back to the top of the timeline' },
+            attrs: { type: 'button', 'aria-label': 'Hopper', title: 'Hopper - back to the top of the timeline', 'data-focus-key': 'logo' },
             on: { click: () => { state.view = 'timeline'; state.profileKey = null; markTimelineVisit(); render(); const main = state.body?.querySelector('.sbtw-main'); if (main) { main.scrollTop = 0; } } },
         }, [bunnyIcon()]),
         navButton('Home', 'fa-house', 'timeline', { badge: unseenTimeline() }),
@@ -2107,6 +2295,7 @@ function render() {
                 'aria-current': state.view === 'profile' ? 'page' : null,
                 disabled: me ? null : 'disabled',
                 title: me ? 'Profile' : 'Set a persona first',
+                'data-focus-key': 'nav:profile',
             },
             on: { click: () => showProfile(me?.key ?? null) },
         }, [el('span', { className: 'sbtw-nav-icon' }, [icon('fa-user')]), el('span', { className: 'sbtw-nav-label', text: 'Profile' })]),
@@ -2119,6 +2308,7 @@ function render() {
     if (anchor && oldMain.dataset.scrollKey === scrollKey) {
         pinScrollAnchor(main, anchor);
     }
+    restoreFocusedControl(state.body, focus);
 }
 
 /**
@@ -2167,9 +2357,22 @@ function pinScrollAnchor(main, anchor) {
     }
 }
 
-function scrollToPost(postId) {
+function scrollToNotification(item) {
     queueMicrotask(() => {
-        state.body?.querySelector(`[data-post-id="${CSS.escape(postId)}"]`)?.scrollIntoView({ block: 'center' });
+        const composerKey = (item.kind === 'reply' || item.kind === 'comment-reply')
+            ? `reply-composer:${replyTargetKey({ postId: item.postId, parentInteractionId: item.interactionId })}`
+            : '';
+        const composer = composerKey
+            ? state.body?.querySelector(`[data-focus-key="${CSS.escape(composerKey)}"]`)
+            : null;
+        const interaction = item.interactionId
+            ? allInteractionsFor(item.postId).find(candidate => candidate.id === item.interactionId)
+            : null;
+        const targetId = isAnswerable(interaction) ? interaction.id : interaction?.parentInteractionId;
+        const target = targetId
+            ? state.body?.querySelector(`[data-reply-id="${CSS.escape(targetId)}"], [data-repost-id="${CSS.escape(targetId)}"]`)
+            : null;
+        (composer ?? target ?? state.body?.querySelector(`[data-post-id="${CSS.escape(item.postId)}"]`))?.scrollIntoView({ block: 'center' });
     });
 }
 
@@ -2209,6 +2412,8 @@ function publish(text) {
     if (state.draftOwner !== owner) {
         state.draft = { text: '', image: '', poll: null };
         state.draftOwner = owner;
+        render();
+        return;
     }
     const options = api.getSettings().polls
         ? (state.draft.poll ?? []).map(option => option.trim()).filter(Boolean)
@@ -2735,9 +2940,9 @@ async function startFeed() {
         const feedFailure = failure.kind === 'feed';
         console.error(`[Hopper] the timeline ${failure.kind} could not be loaded`, failure.error);
         body.append(
-            session ? sessionBar() : null,
+            ...(session ? [sessionBar()] : []),
             el('h3', { text: feedFailure ? 'The saved timeline could not be read' : 'The timeline could not be opened' }),
-            el('p', { className: 'sbtw-hint', text: String(failure.error?.message ?? failure.error) }),
+            el('p', { className: 'sbtw-hint', text: String(failure.error?.message ?? failure.error ?? 'Unknown error') }),
             el('div', { className: 'sbtw-composer-bar' }, [
                 button('Try again', 'sbtw-btn sbtw-btn-primary', () => reopenFeed()),
                 feedFailure ? button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetFailedTimeline()) : null,
@@ -2886,6 +3091,7 @@ export function mountAll() {
 
 export function unmountAll() {
     document.removeEventListener('click', handleHostNavigation, true);
+    removeTrendPanGuard();
     void closeFeed();
     document.body.classList.remove(BODY_CLASS);
     for (const node of owned) {
