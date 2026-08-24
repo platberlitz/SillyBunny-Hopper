@@ -761,6 +761,13 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     margin-top: 0.15rem;
 }
 
+:is(.sbtw-actions, .sbtw-reply-actions) > .sbtw-action:first-child,
+:is(.sbtw-actions, .sbtw-reply-actions) > .sbtw-action-group:first-child > .sbtw-action:first-child {
+    justify-content: flex-start;
+    padding-left: 0;
+    transform-origin: left center;
+}
+
 /* --- composer ----------------------------------------------------------- */
 
 .sbtw-composer,
