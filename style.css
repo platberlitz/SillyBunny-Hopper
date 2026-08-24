@@ -726,10 +726,15 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     gap: 0.6rem;
 }
 
+.sbtw-post-main > .sbtw-replies {
+    margin-left: calc(-2.75rem - var(--sbtw-gap));
+    padding-left: 0;
+}
+
 .sbtw-reply {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    column-gap: 0.5rem;
+    column-gap: var(--sbtw-gap);
     row-gap: 0.2rem;
     align-items: start;
 }
