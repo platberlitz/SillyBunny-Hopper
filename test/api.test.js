@@ -654,6 +654,16 @@ function emptyFeed() {
     return { version: 1, posts: [], interactions: [] };
 }
 
+function activityRequest(prompt) {
+    const match = /# This Request\n(Post|Reply|Repost|Like or vote) (\d+) of (\d+)\./.exec(prompt);
+    assert.ok(match, 'request names one activity');
+    return {
+        kind: match[1] === 'Like or vote' ? 'like' : match[1].toLowerCase(),
+        index: Number(match[2]),
+        total: Number(match[3]),
+    };
+}
+
 test('a refresh with no cast explains itself rather than calling the model', async () => {
     const session = ensureActiveSession();
     updateSession(session.id, { invited: [], ambient: false });
@@ -685,35 +695,55 @@ test('made-up trends from a refresh replace the session trends', async () => {
     assert.deepEqual(getSession(ensureActiveSession().id).trends.map(t => t.topic), ['#Fog'], 'a refresh without trends keeps the last set');
 });
 
-test('one post at a time: one request per post, each committed and shown as it lands', async () => {
-    updateSettings({ incremental: true, concurrency: 1, quotas: { posts: 3, replies: 6, reposts: 2, likes: 9 }, profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+test('small request mode asks for and commits exactly one activity at a time', async () => {
+    updateSettings({ incremental: true, concurrency: 1, quotas: { posts: 3, replies: 2, reposts: 1, likes: 2 }, profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
     const feed = emptyFeed();
     const seen = [];
-    const turns = [];
+    const jobs = [];
     current.generateRaw = async ({ prompt }) => {
-        const match = /as @(\w+) only/.exec(prompt);
-        const author = match ? match[1] : 'ada';
-        turns.push({ author, quotaLine: (/posts: at most (\d+)/.exec(prompt) || [])[1], turnLine: (/Post (\d) of (\d)/.exec(prompt) || []).slice(1, 3).join('/') });
+        const job = activityRequest(prompt);
+        jobs.push({ ...job, prompt });
+        if (job.kind === 'post') {
+            const author = (/as @(\w+) only/.exec(prompt) ?? [])[1] ?? 'ada';
+            return JSON.stringify({
+                posts: [{ authorHandle: author, content: `post by ${author} #${job.index}` }, { authorHandle: author, content: 'extra post' }],
+                interactions: [{ actorHandle: 'bo', type: 'like', targetPostId: 'ignored' }],
+            });
+        }
+        const target = feed.posts[(job.index - 1) % feed.posts.length];
+        const actor = target.authorKey === 'character:ada.png' ? 'bo' : 'ada';
+        const interaction = {
+            actorHandle: actor,
+            targetPostId: target.id,
+            type: job.kind,
+            content: job.kind === 'reply' ? `reply ${job.index}` : job.kind === 'repost' ? `quote ${job.index}` : null,
+        };
         return JSON.stringify({
-            posts: [{ tempId: 't', authorHandle: author, content: `post by ${author} #${turns.length}` }, { tempId: 'extra', authorHandle: author, content: 'a second post that must be dropped' }],
-            interactions: [{ actorHandle: author === 'ada' ? 'bo' : 'ada', type: 'reply', targetTempId: 't', content: `reply ${turns.length}` }],
-            follows: [],
+            posts: [{ authorHandle: actor, content: 'must be ignored' }],
+            interactions: [interaction, { actorHandle: actor, targetPostId: target.id, type: 'reply', content: 'extra' }],
         });
     };
-    const result = await runRefresh({ feed, onPartial: () => seen.push(feed.posts.length) });
-    assert.equal(turns.length, 3, 'one request per post');
-    assert.equal(turns[0].author, turns[2].author, 'authors wrap after rotating');
-    assert.notEqual(turns[0].author, turns[1].author, 'authors rotate');
-    assert.deepEqual(new Set(turns.map(t => t.author)), new Set(['ada', 'bo']));
-    assert.deepEqual(turns.map(t => t.quotaLine), ['1', '1', '1'], 'each turn is told one post');
-    assert.deepEqual(turns.map(t => t.turnLine), ['1/3', '2/3', '3/3']);
+    const result = await runRefresh({ feed, onPartial: partial => { if (partial.posts.length) seen.push(feed.posts.length); } });
+    assert.deepEqual(jobs.map(job => job.kind), ['post', 'post', 'post', 'reply', 'repost', 'like', 'reply', 'like']);
     assert.deepEqual(seen, [1, 2, 3], 'the feed is shown after every committed post');
     assert.equal(result.posts.length, 3);
-    assert.equal(result.interactions.length, 3);
+    assert.equal(result.interactions.length, 5);
     assert.equal(feed.posts.length, 3);
+    for (const job of jobs) {
+        const format = job.prompt.slice(job.prompt.indexOf('# JSON Output Format'));
+        assert.doesNotMatch(format, /"follows"/);
+        if (job.kind === 'post') {
+            assert.match(format, /"posts"/);
+            assert.doesNotMatch(format, /"interactions"/);
+        } else {
+            assert.match(format, /"interactions"/);
+            assert.doesNotMatch(format, /"posts"/);
+        }
+    }
     assert.ok(getSession(ensureActiveSession().id).lastRefreshAt > 0);
 
-    // a malformed turn is skipped, not fatal
+    // A malformed item is retried, then skipped without stopping later jobs.
+    updateSettings({ quotas: { posts: 2, replies: 0, reposts: 0, likes: 0 } });
     let calls = 0;
     current.generateRaw = async ({ prompt }) => {
         calls += 1;
@@ -723,24 +753,82 @@ test('one post at a time: one request per post, each committed and shown as it l
     const feed2 = emptyFeed();
     const result2 = await runRefresh({ feed: feed2 });
     assert.ok(result2.warnings.some(w => /skipped/.test(w)));
-    assert.ok(feed2.posts.length >= 1);
+    assert.equal(feed2.posts.length, 1);
     updateSettings({ incremental: false, concurrency: 3 });
 });
 
-test('incremental mode honours a zero post quota through the batch path', async () => {
+test('activity mode can make reactions without requesting a post', async () => {
     updateSettings({
         incremental: true,
         concurrency: 3,
         quotas: { posts: 0, replies: 2, reposts: 1, likes: 2 },
         profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } },
     });
-    current.nextResponse = JSON.stringify({ posts: [{ authorHandle: 'ada', content: 'must not land' }], interactions: [], follows: [] });
-    const result = await runRefresh({ feed: emptyFeed() });
+    const feed = {
+        version: 1,
+        posts: [{ id: 'p0', authorKey: 'persona:me.png', body: 'existing', createdAt: Date.now() }],
+        interactions: [],
+    };
+    const jobs = [];
+    current.generateRaw = async ({ prompt }) => {
+        const job = activityRequest(prompt);
+        jobs.push(job);
+        const actorHandle = job.index % 2 ? 'ada' : 'bo';
+        return JSON.stringify({ interactions: [{
+            actorHandle,
+            targetPostId: 'p0',
+            type: job.kind,
+            content: job.kind === 'reply' ? `reply ${job.index}` : job.kind === 'repost' ? 'quote' : null,
+        }] });
+    };
+    const result = await runRefresh({ feed });
     assert.equal(result.posts.length, 0);
-    assert.equal(current.calls.filter(call => call[0] === 'generateRaw').length, 1);
+    assert.equal(result.interactions.length, 5);
+    assert.deepEqual(jobs.map(job => job.kind), ['reply', 'repost', 'like', 'reply', 'like']);
 });
 
-test('sequential rolling mode shares poll and image budgets across every turn', async () => {
+test('activity mode does not request ambient posts that local policy must drop', async () => {
+    const session = ensureActiveSession();
+    updateSession(session.id, { invited: [], ambient: true });
+    updateSettings({ incremental: true, quotas: { posts: 4, replies: 0, reposts: 0, likes: 0 } });
+    const jobs = [];
+    current.generateRaw = async ({ prompt }) => {
+        jobs.push(activityRequest(prompt));
+        return JSON.stringify({
+            strangers: [{ name: 'Mara', handle: 'mara', bio: 'passing through' }],
+            posts: [{ authorHandle: 'mara', content: 'Just passing through.' }],
+        });
+    };
+    const result = await runRefresh({ feed: emptyFeed() });
+    assert.deepEqual(jobs, [{ kind: 'post', index: 1, total: 1 }]);
+    assert.equal(result.posts.length, 1);
+});
+
+test('activity mode skips reactions when a fresh ambient timeline has no actor', async () => {
+    const session = ensureActiveSession();
+    updateSession(session.id, { invited: [], ambient: true });
+    updateSettings({ incremental: true, quotas: { posts: 0, replies: 2, reposts: 1, likes: 2 } });
+    const result = await runRefresh({ feed: emptyFeed() });
+    assert.equal(current.calls.filter(call => call[0] === 'generateRaw').length, 0);
+    assert.ok(result.warnings.some(warning => /no active account/.test(warning)));
+    assert.equal(getSession(session.id).lastRefreshAt, 0);
+});
+
+test('a wrong activity shape does not stamp a successful refresh', async () => {
+    const session = ensureActiveSession();
+    updateSettings({
+        incremental: true,
+        quotas: { posts: 1, replies: 0, reposts: 0, likes: 0 },
+        profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } },
+    });
+    current.nextResponse = JSON.stringify({ interactions: [{ actorHandle: 'ada', type: 'like', targetPostId: 'missing' }] });
+    const result = await runRefresh({ feed: emptyFeed() });
+    assert.equal(result.posts.length, 0);
+    assert.ok(result.warnings.some(warning => /requested activity was missing/.test(warning)));
+    assert.equal(getSession(session.id).lastRefreshAt, 0);
+});
+
+test('activity requests share poll and image budgets across every post', async () => {
     updateSettings({
         incremental: true,
         concurrency: 1,
@@ -765,8 +853,8 @@ test('sequential rolling mode shares poll and image budgets across every turn', 
     assert.equal(current.calls.filter(call => call[0] === 'slash').length, 1);
 });
 
-test('several at once: the requests overlap, the caps still hold, and only the first turn opens the door', async () => {
-    updateSettings({ incremental: true, concurrency: 3, quotas: { posts: 3, replies: 6, reposts: 2, likes: 9 }, profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+test('several at once: tiny post and reaction requests overlap without mixing output shapes', async () => {
+    updateSettings({ incremental: true, concurrency: 3, quotas: { posts: 3, replies: 3, reposts: 2, likes: 3 }, profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
     updateSession(ensureActiveSession().id, { ambient: true });
     const feed = emptyFeed();
     const seen = [];
@@ -774,36 +862,43 @@ test('several at once: the requests overlap, the caps still hold, and only the f
     let inFlight = 0;
     let mostAtOnce = 0;
     current.generateRaw = async ({ prompt }) => {
+        const job = activityRequest(prompt);
         inFlight += 1;
         mostAtOnce = Math.max(mostAtOnce, inFlight);
         await new Promise(resolve => setTimeout(resolve, 5));
-        const author = (/as @(\w+) only/.exec(prompt) ?? [])[1] ?? 'ada';
-        prompts.push(prompt);
+        prompts.push({ ...job, prompt });
         inFlight -= 1;
-        return JSON.stringify({
-            posts: [{ tempId: 't', authorHandle: author, content: `post by ${author} #${prompts.length}` }],
-            interactions: [{ actorHandle: author === 'ada' ? 'bo' : 'ada', type: 'reply', targetTempId: 't', content: `reply ${prompts.length}` }],
-            follows: [],
-        });
+        if (job.kind === 'post') {
+            const author = (/as @(\w+) only/.exec(prompt) ?? [])[1] ?? 'ada';
+            return JSON.stringify({ posts: [{ authorHandle: author, content: `post by ${author} #${job.index}` }] });
+        }
+        const target = feed.posts[(job.index - 1) % feed.posts.length];
+        const actor = target.authorKey === 'character:ada.png' ? 'bo' : 'ada';
+        return JSON.stringify({ interactions: [{
+            actorHandle: actor,
+            type: job.kind,
+            targetPostId: target.id,
+            content: job.kind === 'reply' ? `reply ${job.index}` : job.kind === 'repost' ? `quote ${job.index}` : null,
+        }] });
     };
-    const result = await runRefresh({ feed, onPartial: () => seen.push(feed.posts.length) });
+    const result = await runRefresh({ feed, onPartial: partial => seen.push(partial.posts.length ? 'post' : partial.interactions[0]?.type) });
 
-    assert.equal(prompts.length, 3, 'one request per post');
-    assert.equal(mostAtOnce, 3, 'and all three were in flight together');
-    assert.deepEqual(seen, [1, 2, 3], 'each lands on its own, in order, however they finished');
+    assert.equal(prompts.length, 11, 'one request per configured item');
+    assert.equal(mostAtOnce, 3, 'three tiny requests were in flight together');
+    assert.deepEqual(seen.slice(0, 3), ['post', 'post', 'post'], 'reactions wait until all posts can be targeted');
     assert.equal(result.posts.length, 3);
+    assert.equal(result.interactions.length, 8);
     assert.equal(feed.posts.length, 3);
 
-    // The allowance is split up front, so turns that cannot see each other still add up to the caps.
-    const replyCaps = prompts.map(prompt => Number((/replies: at most (\d+)/.exec(prompt) ?? [])[1]));
-    assert.deepEqual(replyCaps, [2, 2, 2], 'six replies across three turns');
-    assert.equal(replyCaps.reduce((sum, value) => sum + value, 0), 6);
-    const likeCaps = prompts.map(prompt => Number((/likes: at most (\d+)/.exec(prompt) ?? [])[1]));
-    assert.equal(likeCaps.reduce((sum, value) => sum + value, 0), 9);
+    for (const job of prompts) {
+        const format = job.prompt.slice(job.prompt.indexOf('# JSON Output Format'));
+        assert.equal((format.match(/^  "(?:posts|interactions)":/gm) ?? []).length, 1, `${job.kind} has one output collection`);
+    }
 
-    // Strangers, a poll and the trending bar belong to the opening turn; the rest would multiply them.
-    const opener = prompts.find(prompt => /Post 1 of 3/.test(prompt));
-    const others = prompts.filter(prompt => !/Post 1 of 3/.test(prompt));
+    // Strangers, a poll and the trending bar belong to the opening post only.
+    const postPrompts = prompts.filter(job => job.kind === 'post');
+    const opener = postPrompts.find(job => job.index === 1).prompt;
+    const others = postPrompts.filter(job => job.index !== 1).map(job => job.prompt);
     assert.match(opener, /You may introduce up to 2 new strangers/);
     assert.match(opener, /polls: at most 1/);
     assert.match(opener, /Also return 4 to 6 "trends"/);
@@ -817,7 +912,7 @@ test('several at once: the requests overlap, the caps still hold, and only the f
     updateSettings({ incremental: false });
 });
 
-test('parallel turns commit in landing order and revalidate duplicate reactions against current state', async () => {
+test('parallel item requests commit in landing order and revalidate duplicate reactions against current state', async () => {
     updateSettings({
         incremental: true,
         concurrency: 3,
@@ -830,17 +925,16 @@ test('parallel turns commit in landing order and revalidate duplicate reactions 
         interactions: [],
     };
     current.generateRaw = async ({ prompt }) => {
-        const index = Number((/Post (\d) of 3/.exec(prompt) ?? [])[1]);
-        const author = (/as @(\w+) only/.exec(prompt) ?? [])[1];
-        await new Promise(resolve => setTimeout(resolve, { 1: 30, 2: 5, 3: 15 }[index]));
-        return JSON.stringify({
-            posts: [{ authorHandle: author, content: `turn ${index}` }],
-            interactions: [{ actorHandle: 'bo', type: 'like', targetPostId: 'p0' }],
-            follows: [],
-        });
+        const job = activityRequest(prompt);
+        await new Promise(resolve => setTimeout(resolve, job.kind === 'post' ? { 1: 30, 2: 5, 3: 15 }[job.index] : 5));
+        if (job.kind === 'post') {
+            const author = (/as @(\w+) only/.exec(prompt) ?? [])[1];
+            return JSON.stringify({ posts: [{ authorHandle: author, content: `turn ${job.index}` }] });
+        }
+        return JSON.stringify({ interactions: [{ actorHandle: 'bo', type: 'like', targetPostId: 'p0' }] });
     };
     const landed = [];
-    const result = await runRefresh({ feed, onPartial: partial => landed.push(partial.posts[0]?.body) });
+    const result = await runRefresh({ feed, onPartial: partial => { if (partial.posts.length) landed.push(partial.posts[0].body); } });
     assert.deepEqual(landed, ['turn 2', 'turn 3', 'turn 1']);
     assert.equal(result.interactions.filter(item => item.type === 'like').length, 1);
 });
@@ -918,7 +1012,7 @@ test('a topic refresh sends the topic and leaves the trending bar alone', async 
     assert.deepEqual(getSession(session.id).trends.map(trend => trend.topic), ['#Old']);
 });
 
-test('a rolling turn cannot substitute another active post author', async () => {
+test('a post request cannot substitute another active post author', async () => {
     updateSettings({
         incremental: true,
         concurrency: 1,

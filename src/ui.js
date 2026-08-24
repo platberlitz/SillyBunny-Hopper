@@ -1937,7 +1937,7 @@ function settingsView() {
             : null,
 
         el('h3', { text: 'Connection' }),
-        field('Write posts with', profileSelect, 'A cheap model is fine here. One refresh writes the whole batch, or one post per request with the option below.'),
+        field('Write posts with', profileSelect, 'A cheap model is fine here. One refresh writes the whole batch, or one activity per request with the option below.'),
         field('Reply budget (tokens)', numberInput(settings.maxTokens, 256, 1000000, value => save({ maxTokens: value })),
             'The most one reply may run to. Thinking models (Kimi, GLM, DeepSeek, Qwen...) spend part of it on their reasoning, and a budget that runs out mid-JSON is a malformed reply - so it is generous. Lower it only if your provider refuses the request.'),
 
@@ -1949,12 +1949,12 @@ function settingsView() {
             field('Likes', numberInput(settings.quotas.likes, 0, 500, value => savePart('quotas', { likes: value }))),
         ]),
         checkbox('Let accounts make polls', settings.polls, value => save({ polls: value })),
-        checkbox('One post at a time', settings.incremental, value => save({ incremental: value })),
+        checkbox('One activity per request', settings.incremental, value => save({ incremental: value })),
         settings.incremental
             ? field('Requests at once', numberInput(settings.concurrency, 1, 6, value => save({ concurrency: value })),
-                'Several small requests in flight together, each writing one post, each shown the moment it lands. The wait is roughly one request instead of all of them; the cost is that each one carries the context again, so more at once means faster but pricier. One at a time is the old single file.')
+                'Several tiny requests in flight together. Posts land first, then individual replies, reposts, likes and votes. More at once is faster but pricier because every request carries the timeline context.')
             : null,
-        el('p', { className: 'sbtw-hint', text: 'Each request writes a single post and the reactions to it, and the timeline fills in as they land. More requests than the batch, but the first post shows up in seconds. Posts above is how many.' }),
+        el('p', { className: 'sbtw-hint', text: 'Each request returns one post or one reaction in a small JSON object, and the timeline fills in as they land. Posts above is how many.' }),
 
         el('h3', { text: 'Pictures' }),
         checkbox('Generate images for some posts', settings.images.enabled, value => savePart('images', { enabled: value })),

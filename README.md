@@ -28,7 +28,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 - Opens from the Character Menu, next to Roleplay and Conversation, or from the wand menu, and takes over the chat area while open.
 - One or more timelines, each owned by a persona with its own profile, cast, follows and history.
-- **Refresh** picks a few invited characters and asks the model for posts, replies, reposts, likes, follows and poll votes in one request. At most one poll per refresh, whatever the model tries.
+- **Refresh** picks a few invited characters and asks the model for posts, replies, reposts, likes, follows and poll votes in one request by default. At most one poll per refresh, whatever the model tries.
 - Optional **strangers**: passers-by the model invents. They get profiles, can be followed, and come back later.
 - Characters sometimes repost with a comment; a quote shows the comment with the original post in a card underneath.
 - A small accent dot marks posts and replies that arrived since your last visit to the timeline, and the Home tab carries the count; looking at the timeline, or asking for a refresh, clears both.
@@ -56,7 +56,7 @@ The idea comes from the Noodle in [Marinara Engine](https://github.com/Pasta-Dev
 
 ## What Refresh does
 
-It picks a few invited characters (and a couple of known strangers), writes missing profiles, and sends one request. With **One post at a time** on, it sends one request per post and shows each as it lands. Tapping a trending topic runs the same refresh with every new post about that topic. The reply is treated as untrusted:
+It picks a few invited characters (and a couple of known strangers), writes missing profiles, and sends one batch request by default. With **One activity per request** on, it requests posts first, then sends separate small requests for replies, reposts, likes and poll votes; configured requests run together and each item appears as it lands. Tapping a trending topic runs the same refresh with every new post about that topic. The reply is treated as untrusted:
 
 - anything written as the persona is dropped
 - invented accounts are dropped, except up to two new strangers per refresh
@@ -75,7 +75,7 @@ All under **Settings** inside Hopper. The drawer in the Extensions panel only ho
 - **Connection** - which connection profile writes the posts; unset, the current one. A cheap model is fine. A refresh does not apply the profile's preset (its stop strings and post-processing would cut a JSON reply in half), but the preset's reasoning settings - effort, verbosity, and the custom-reasoning parameters - are carried across. On a **custom** endpoint the effort only reaches the provider when the preset's custom reasoning *parameter name* and *format* are both filled in; that is a SillyBunny rule, not a Hopper one. **Reply budget** caps one reply (32K tokens by default: thinking models spend part of it on reasoning, and a budget that runs out mid-JSON is a malformed reply); lower it only if a provider refuses it.
 - **How much each refresh makes** - caps for posts, replies, reposts and likes (defaults 8, 12, 4 and 18).
 - **How much history it reads** - how much of the timeline goes back to the model each refresh (defaults 24 hours, 30 posts, 4 replies per post). This is most of every request and it does not scale with what a refresh writes, so a long window makes a small refresh just as slow; raise it for longer memory, lower it for quicker, cheaper refreshes.
-- **One post at a time** - one request per post instead of one for the whole batch, each shown the moment it lands. **Requests at once** (default 3) puts several of those in flight together, so the wait is roughly one request rather than all of them; each carries the context again, so more at once is faster but pricier. Set it to 1 for the old single file.
+- **One activity per request** - each small request asks for exactly one post, reply, repost, like or poll vote. Posts land first, then reactions. **Requests at once** (default 3) puts several requests in flight together; each carries the context again, so more at once is faster but pricier. Set it to 1 to run them sequentially.
 - **Pictures** - off by default. Needs Quick Image Gen 3.3 or newer (bundled in SillyBunny; Hopper asks it quietly for one picture per post) or, failing that, the Image Generation extension's `/imagine` set up.
 - **Voice** - the tone text, the only editable part of the prompt.
 - **The chat you have open** - off by default. With it on, the last few messages of the open chat go to the timeline's model, so the characters in that scene can post about their own day; only they may mention it.

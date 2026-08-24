@@ -51,9 +51,9 @@ export const DEFAULTS = Object.freeze({
     ambient: false,
     profileId: '',
     quotas: { posts: 8, replies: 12, reposts: 4, likes: 18 },
-    /** One post per request, committed and shown as each lands, instead of one batch. */
+    /** One post or interaction per request, committed and shown as each lands. */
     incremental: false,
-    /** How many of those small requests run at once. One is the old single file. */
+    /** How many of those small requests run at once. */
     concurrency: 3,
     active: { mode: 'range', min: 2, max: 5, count: 3 },
     images: { enabled: false, perRefresh: 3, instructions: '' },
@@ -478,18 +478,6 @@ export function reasoningOverridesFrom(profile, preset) {
     return overrides;
 }
 
-/**
- * Splits a refresh's allowance across its turns. Turns that run at once cannot watch each
- * other spend, so each is handed its own share up front and the shares add up to the whole.
- */
-export function shareQuota(total, turns) {
-    const count = Math.max(1, Math.trunc(turns));
-    const whole = Math.max(0, Math.trunc(total));
-    const base = Math.floor(whole / count);
-    const extra = whole % count;
-    return Array.from({ length: count }, (_, index) => base + (index < extra ? 1 : 0));
-}
-
 export function snapshotOf(account) {
     return {
         key: account.key,
@@ -891,21 +879,63 @@ const OUTPUT_SHAPE = {
     }],
 };
 
-export function buildFormatMessage() {
-    return ['# JSON Output Format', JSON.stringify(OUTPUT_SHAPE, null, 2)].join('\n');
+export function buildFormatMessage(turn = null) {
+    if (!turn?.kind) {
+        return ['# JSON Output Format', JSON.stringify(OUTPUT_SHAPE, null, 2)].join('\n');
+    }
+
+    let shape;
+    if (turn.kind === 'post') {
+        shape = {
+            posts: [{
+                authorHandle: 'exact @handle of the assigned author',
+                content: 'one post; "\\n" starts a new line',
+                poll: { question: 'optional poll question', options: ['first answer', 'second answer'] },
+                imagePrompt: 'optional image prompt or null',
+            }],
+        };
+        if (turn.strangers > 0) {
+            shape.strangers = [{ name: 'display name', handle: 'lowercase handle without @', bio: 'one-line bio' }];
+        }
+        if (turn.trends) {
+            shape.trends = [{ topic: 'short hashtag or phrase', posts: 1200 }];
+        }
+    } else {
+        const interaction = {
+            actorHandle: 'exact @handle of one active non-persona account',
+            targetPostId: 'existing postId from the timeline',
+            parentInteractionId: 'existing replyId when targeting a comment, otherwise null',
+            type: turn.kind === 'like' ? 'like | vote' : turn.kind,
+            content: turn.kind === 'reply' ? 'one reply' : turn.kind === 'repost' ? 'optional short quote comment or null' : null,
+        };
+        if (turn.kind === 'like') {
+            interaction.pollOptionIndex = 'zero-based option index for a vote, otherwise null';
+        }
+        shape = { interactions: [interaction] };
+    }
+    return ['# JSON Output Format', JSON.stringify(shape, null, 2)].join('\n');
 }
 
-/** One step of a rolling refresh: exactly one post by the named author, plus the reactions to it. */
-export function buildTurnInstruction({ index = 1, total = 1, author = null, remaining = {} } = {}) {
-    const who = author?.handle
-        ? `Write exactly one new post, as @${author.handle} only - no posts by anyone else.`
-        : 'Write exactly one new post, as a stranger (new or already around) - no posts by the cast.';
+/** One small generation request: exactly one post or interaction. */
+export function buildTurnInstruction({ kind = 'post', index = 1, total = 1, author = null } = {}) {
+    const label = kind === 'like' ? 'Like or vote' : `${kind[0].toUpperCase()}${kind.slice(1)}`;
+    let instruction;
+    if (kind === 'post') {
+        instruction = author?.handle
+            ? `Write exactly one new post, as @${author.handle} only - no posts by anyone else.`
+            : 'Write exactly one new post, as a stranger (new or already around) - no posts by the cast.';
+    } else if (kind === 'reply') {
+        instruction = 'Write exactly one reply from one active account to a recent post or comment.';
+    } else if (kind === 'repost') {
+        instruction = 'Write exactly one repost from one active account, with a short quote comment only if it fits naturally.';
+    } else {
+        instruction = 'Write exactly one like or poll vote from one active account.';
+    }
     return [
-        '# This Turn',
-        `Post ${index} of ${total} in a rolling refresh; earlier posts from this refresh are already in the timeline above.`,
-        who,
-        'Then add reactions from the other active accounts: replies, likes, reposts and poll votes on this new post and, where it is natural, on the recent posts above, spread across their authors rather than aimed at one person. Do not add reactions that repeat what an account already said.',
-        `Remaining for the rest of this refresh: replies ${remaining.replies ?? 0}, reposts ${remaining.reposts ?? 0}, likes ${remaining.likes ?? 0}. Stay well under them; the later turns need room too.`,
+        '# This Request',
+        `${label} ${index} of ${total}. Earlier completed requests are already in the timeline above.`,
+        instruction,
+        'Return only the requested item in the small JSON shape below. Do not add any other activity.',
     ].join('\n');
 }
 
@@ -914,7 +944,7 @@ export function buildRefreshMessages({ accounts, active, persona, session, posts
         { role: 'system', content: buildSystemPrompt(settings) },
         { role: 'user', content: buildContextMessage({ accounts, active, persona, session, posts, interactions, settings, now, localTime, strangers, trends, topic, pollLimit, scene }) },
         ...(turn ? [{ role: 'user', content: buildTurnInstruction(turn) }] : []),
-        { role: 'user', content: buildFormatMessage() },
+        { role: 'user', content: buildFormatMessage(turn) },
     ];
 }
 

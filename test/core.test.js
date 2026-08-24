@@ -336,7 +336,7 @@ test('at most one poll survives a refresh, however many the model writes', () =>
     assert.equal(result.posts.filter(post => post.poll).length, 1);
     assert.equal(result.warnings.filter(w => /poll: dropped/.test(w)).length, 2);
     assert.match(buildContextMessage({ accounts, active: accounts, persona: null, settings: settings(), now: NOW }), /polls: at most 1 in this whole refresh/);
-    // A rolling refresh spends its one poll on the first turn and asks for none afterwards.
+    // An activity refresh spends its one poll on the first post and asks for none afterwards.
     assert.match(buildContextMessage({ accounts, active: accounts, persona: null, settings: settings(), now: NOW, pollLimit: 0 }), /polls: at most 0 in this whole refresh/);
     assert.equal(materializeRefresh(parsed, { accounts, settings: settings(), newId, now: NOW, pollLimit: 0 }).posts.filter(post => post.poll).length, 0);
 });
@@ -1323,17 +1323,23 @@ test('insertMention replaces the token and puts the caret after the inserted han
     assert.deepEqual(insertMention('@', 0, 1, 'otto_brand'), { text: '@otto_brand ', caret: 12 });
 });
 
-test('a rolling-refresh turn adds one instruction message naming the author and the remaining budget', () => {
+test('small refresh requests name one item and expose only its JSON shape', () => {
     const accounts = deriveAccounts({ characters: [{ avatar: 'a.png', name: 'Ada' }], invited: ['a.png'], persona: { entityId: 'me.png', name: 'Me' } });
     const base = { accounts, active: accounts.filter(a => a.kind === 'character'), persona: accounts[0], session: null, posts: [], interactions: [], settings: settings(), now: 1, localTime: 'x' };
     const plain = buildRefreshMessages(base);
-    const turn = buildRefreshMessages({ ...base, turn: { index: 2, total: 5, author: accounts[1], remaining: { replies: 7, reposts: 2, likes: 10 } } });
+    const turn = buildRefreshMessages({ ...base, turn: { kind: 'post', index: 2, total: 5, author: accounts[1], strangers: 0, trends: false } });
+    const reply = buildRefreshMessages({ ...base, turn: { kind: 'reply', index: 1, total: 3 } });
     assert.equal(plain.length, 3);
     assert.equal(turn.length, 4);
     assert.match(turn[2].content, /Post 2 of 5/);
     assert.match(turn[2].content, /as @ada only/);
-    assert.match(turn[2].content, /replies 7, reposts 2, likes 10/);
-    assert.match(buildTurnInstruction({ index: 1, total: 1, author: null }), /as a stranger/);
+    assert.match(turn.at(-1).content, /"posts"/);
+    assert.doesNotMatch(turn.at(-1).content, /"interactions"/);
+    assert.match(reply[2].content, /Reply 1 of 3/);
+    assert.match(reply.at(-1).content, /"interactions"/);
+    assert.doesNotMatch(reply.at(-1).content, /"posts"/);
+    assert.match(buildTurnInstruction({ kind: 'post', index: 1, total: 1, author: null }), /as a stranger/);
+    assert.match(buildTurnInstruction({ kind: 'like' }), /exactly one like or poll vote/);
     assert.equal(normalizeSettings({ incremental: true }).incremental, true);
     assert.equal(normalizeSettings({}).incremental, false);
 });

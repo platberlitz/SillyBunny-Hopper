@@ -23,7 +23,6 @@ import {
     MAX_NEW_STRANGERS_PER_REFRESH,
     MAX_POLLS_PER_REFRESH,
     reasoningOverridesFrom,
-    shareQuota,
 } from './core.js';
 
 // getContext() copies chatId / characterId / chatMetadata by value, so a cached reference
@@ -1105,10 +1104,8 @@ export async function runRefresh({ sessionId = ensureActiveSession().id, feed, s
         activeKeys, newId, topic, scene,
     };
 
-    if (current.incremental && current.quotas.posts > 0) {
-        const result = current.concurrency > 1
-            ? await runParallelRefresh(batch)
-            : await runIncrementalRefresh(batch);
+    if (current.incremental) {
+        const result = await runIncrementalRefresh(batch);
         result.profilesWritten = profilesWritten;
         return result;
     }
@@ -1183,7 +1180,7 @@ async function generateBatch(messages, maxTokens, { signal, onProgress, active }
 /**
  * Draws any images, writes the whole future feed (the commit point), then mirrors the
  * new rows into the in-memory feed and the session. Shared by the batch and the
- * one-post-at-a-time paths so both persist the same way.
+ * activity-at-a-time paths so both persist the same way.
  */
 async function commitBatch(result, { sessionId, feed, signal, onProgress, onPartial, settings }) {
     if (settings.images.enabled) {
@@ -1246,20 +1243,46 @@ async function commitBatch(result, { sessionId, feed, signal, onProgress, onPart
     }
 }
 
-/**
- * One post per request: each turn names an author, takes exactly one post plus the
- * reactions to it, commits it and shows it, then moves on. More requests, but the first
- * post lands in seconds and the timeline fills in as it goes.
- */
-/**
- * One small request: a single post by the given author, plus the reactions around it. Used by
- * both paces - one at a time, and several at once.
- */
-async function runOneTurn(batch, { index, total, author, turnSettings, strangersLeft, pollsLeft, trends, liveAccounts, activeKeys, remaining }) {
-    const { feed, persona, session, topic, scene } = batch;
+function authorKeysForTurn(author, accounts, activeKeys) {
+    return author
+        ? [author.key]
+        : accounts.filter(account => account.kind === KIND_AMBIENT && activeKeys.has(account.key)).map(account => account.key);
+}
+
+function settingsForActivity(settings, job) {
+    const quotas = { posts: 0, replies: 0, reposts: 0, likes: 0 };
+    const key = { post: 'posts', reply: 'replies', repost: 'reposts', like: 'likes' }[job.kind];
+    quotas[key] = 1;
+    return {
+        ...settings,
+        quotas,
+        images: { ...settings.images, perRefresh: job.kind === 'post' ? job.imageLimit : 0 },
+    };
+}
+
+function scopeActivity(parsed, job) {
+    const scoped = { posts: [], interactions: [], follows: [], strangers: [], trends: [], salvaged: parsed.salvaged };
+    if (job.kind === 'post') {
+        scoped.posts = parsed.posts.slice(0, 1);
+        scoped.strangers = job.strangers > 0 ? parsed.strangers.slice(0, job.strangers) : [];
+        scoped.trends = job.trends ? parsed.trends : [];
+        return scoped;
+    }
+    const allowed = job.kind === 'like' ? new Set(['like', 'vote']) : new Set([job.kind]);
+    const interaction = parsed.interactions.find(item => allowed.has(String(item?.type ?? '').toLowerCase()));
+    if (interaction) {
+        scoped.interactions.push(interaction);
+    }
+    return scoped;
+}
+
+async function runActivity(batch, job, liveAccounts) {
+    const { feed, persona, session, topic, scene, activeKeys, settings } = batch;
+    const active = liveAccounts.filter(account => activeKeys.has(account.key));
+    const turnSettings = settingsForActivity(settings, job);
     const messages = buildRefreshMessages({
         accounts: liveAccounts,
-        active: liveAccounts.filter(account => activeKeys.has(account.key)),
+        active,
         persona,
         session,
         posts: feed.posts,
@@ -1267,244 +1290,141 @@ async function runOneTurn(batch, { index, total, author, turnSettings, strangers
         settings: turnSettings,
         now: Date.now(),
         localTime: new Date().toLocaleString(),
-        strangers: strangersLeft,
-        pollLimit: pollsLeft,
+        strangers: job.strangers,
+        pollLimit: job.pollLimit,
         scene,
-        turn: { index, total, author, remaining },
-        trends,
+        turn: job,
+        trends: job.trends,
         topic,
     });
-    return generateBatch(messages, turnSettings.maxTokens, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
+    const parsed = await generateBatch(messages, settings.maxTokens, { ...batch, active });
+    return parsed ? { parsed: scopeActivity(parsed, job), turnSettings } : null;
 }
 
-/**
- * Several small requests in flight at once, each writing one post, each shown the moment it
- * lands. Wall-clock is roughly one request rather than all of them, at the cost of sending the
- * context once per request. Turns in the same wave cannot see each other, so each is given its
- * own author and its own slice of the allowance, and only the first may bring in strangers,
- * a poll or the trending bar.
- */
-async function runParallelRefresh(batch) {
-    const { sessionId, feed, signal, onProgress, accounts, active, session, settings, activeKeys, topic, newId } = batch;
-    const quotas = settings.quotas;
-    const total = quotas.posts;
+/** Generates one item per request. Posts finish first, then tiny interaction requests run against them. */
+async function runIncrementalRefresh(batch) {
+    const { sessionId, feed, signal, onProgress, active, session, settings, activeKeys, newId, topic } = batch;
     const cast = active.filter(account => account.kind === KIND_CHARACTER);
-    const width = cast.length ? Math.min(Math.max(1, settings.concurrency), total) : 1;
-    const shares = {
-        replies: shareQuota(quotas.replies, total),
-        reposts: shareQuota(quotas.reposts, total),
-        likes: shareQuota(quotas.likes, total),
-    };
+    const width = Math.max(1, settings.concurrency);
     const all = { posts: [], interactions: [], follows: [], strangers: [], trends: [], warnings: [] };
     let commits = Promise.resolve();
-    let successfulTurns = 0;
+    let committedRequests = 0;
     let firstTransportError = null;
 
-    for (let start = 1; start <= total; start += width) {
-        signal?.throwIfAborted();
-        const wave = [];
-        for (let index = start; index < start + width && index <= total; index += 1) {
-            wave.push(index);
+    const runJobs = async (jobs, phaseWidth, phase) => {
+        for (let start = 0; start < jobs.length; start += phaseWidth) {
+            signal?.throwIfAborted();
+            const wave = jobs.slice(start, start + phaseWidth);
+            const requestAccounts = await currentAccounts(sessionId);
+            onProgress(wave.length > 1
+                ? `Writing ${wave.length} ${phase} at once...`
+                : `${wave[0].kind === 'like' ? 'Like or vote' : `${wave[0].kind[0].toUpperCase()}${wave[0].kind.slice(1)}`} ${wave[0].index} of ${wave[0].total}...`);
+
+            await Promise.all(wave.map(async (baseJob) => {
+                const job = baseJob.kind === 'post' && !cast.length
+                    ? { ...baseJob, strangers: session.ambient ? Math.max(0, MAX_NEW_STRANGERS_PER_REFRESH - all.strangers.length) : 0 }
+                    : baseJob;
+                let generated;
+                try {
+                    generated = await runActivity(batch, job, requestAccounts);
+                } catch (error) {
+                    if (signal?.aborted) {
+                        throw error;
+                    }
+                    console.warn(`[Hopper] ${job.kind} ${job.index} of ${job.total} failed`, error);
+                    firstTransportError ??= error;
+                    all.warnings.push(`${job.kind} ${job.index}: ${error.message || 'request failed'}`);
+                    return;
+                }
+                if (!generated) {
+                    all.warnings.push(`${job.kind} ${job.index}: nothing usable came back, skipped`);
+                    return;
+                }
+                const commit = commits.then(async () => {
+                    const liveAccounts = await currentAccounts(sessionId);
+                    const result = materializeRefresh(generated.parsed, {
+                        accounts: liveAccounts,
+                        allowedActorKeys: [...activeKeys],
+                        allowedPostAuthorKeys: job.kind === 'post' ? authorKeysForTurn(job.author, liveAccounts, activeKeys) : null,
+                        allowNewStrangerPosts: job.kind === 'post' && !job.author,
+                        settings: generated.turnSettings,
+                        posts: feed.posts,
+                        interactions: feed.interactions,
+                        newId,
+                        now: Date.now(),
+                        strangerLimit: job.strangers,
+                        strangerPostLimit: job.kind === 'post'
+                            ? Math.max(0, 1 - all.posts.filter(post => post.authorSnapshot?.kind === KIND_AMBIENT).length)
+                            : 0,
+                        pollLimit: job.pollLimit,
+                        imageLimit: job.imageLimit,
+                        requiredTopic: topic,
+                        allowTrends: job.trends,
+                    });
+                    const changed = ['posts', 'interactions', 'follows', 'strangers', 'trends']
+                        .some(key => result[key]?.length);
+                    if (changed) {
+                        await commitBatch(result, batch);
+                        committedRequests += 1;
+                    } else if (!result.warnings.length) {
+                        result.warnings.push(`${job.kind} ${job.index}: requested activity was missing, skipped`);
+                    }
+                    for (const stranger of result.strangers) {
+                        activeKeys.add(`${KIND_AMBIENT}:${stranger.id}`);
+                    }
+                    for (const key of ['posts', 'interactions', 'follows', 'strangers', 'trends', 'warnings']) {
+                        all[key].push(...result[key]);
+                    }
+                });
+                commits = commit;
+                await commit;
+            }));
         }
-        onProgress(wave.length > 1
-            ? `Writing posts ${wave[0]}-${wave.at(-1)} of ${total} at once...`
-            : `Post ${wave[0]} of ${total}...`);
+    };
 
-        const jobs = wave.map(async (index) => {
-            const remaining = { replies: shares.replies[index - 1], reposts: shares.reposts[index - 1], likes: shares.likes[index - 1] };
-            const imageLimit = settings.images.enabled && index <= settings.images.perRefresh ? 1 : 0;
-            const turnSettings = {
-                ...settings,
-                quotas: { posts: 1, ...remaining },
-                images: { ...settings.images, perRefresh: imageLimit },
-            };
-            let parsed;
-            try {
-                parsed = await runOneTurn(batch, {
-                    index,
-                    total,
-                    author: cast.length ? cast[(index - 1) % cast.length] : null,
-                    turnSettings,
-                    // Only the opening turn may introduce anyone or set the bar; the rest would multiply them.
-                    strangersLeft: index === 1 && session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
-                    pollsLeft: index === 1 ? MAX_POLLS_PER_REFRESH : 0,
-                    trends: index === 1 && !topic,
-                    liveAccounts: accounts,
-                    activeKeys,
-                    remaining,
-                });
-            } catch (error) {
-                if (signal?.aborted) {
-                    throw error;
-                }
-                console.warn(`[Hopper] post ${index} of ${total} failed`, error);
-                firstTransportError ??= error;
-                all.warnings.push(`turn ${index}: ${error.message || 'request failed'}`);
-                return;
-            }
-            if (!parsed) {
-                all.warnings.push(`turn ${index}: nothing usable came back, skipped`);
-                return;
-            }
-            successfulTurns += 1;
-            const commit = commits.then(async () => {
-                const liveAccounts = await currentAccounts(sessionId);
-                const allowedPostAuthorKeys = authorKeysForTurn(cast.length ? cast[(index - 1) % cast.length] : null, liveAccounts, activeKeys);
-                const result = materializeRefresh(parsed, {
-                    accounts: liveAccounts,
-                    allowedActorKeys: [...activeKeys],
-                    allowedPostAuthorKeys,
-                    allowNewStrangerPosts: !cast.length,
-                    settings: turnSettings,
-                    posts: feed.posts,
-                    interactions: feed.interactions,
-                    newId,
-                    now: Date.now(),
-                    strangerLimit: index === 1 && session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
-                    strangerPostLimit: index === 1 ? 1 : 0,
-                    pollLimit: index === 1 ? MAX_POLLS_PER_REFRESH : 0,
-                    imageLimit,
-                    requiredTopic: topic,
-                    allowTrends: index === 1 && !topic,
-                });
-                await commitBatch(result, batch);
-                for (const stranger of result.strangers) {
-                    activeKeys.add(`${KIND_AMBIENT}:${stranger.id}`);
-                }
-                for (const key of ['posts', 'interactions', 'follows', 'strangers', 'trends', 'warnings']) {
-                    all[key].push(...result[key]);
-                }
-            });
-            commits = commit;
-            await commit;
-        });
-        await Promise.all(jobs);
+    const postCount = cast.length ? settings.quotas.posts : Math.min(settings.quotas.posts, 1);
+    const postJobs = Array.from({ length: postCount }, (_, offset) => {
+        const index = offset + 1;
+        return {
+            kind: 'post',
+            index,
+            total: postCount,
+            author: cast.length ? cast[offset % cast.length] : null,
+            strangers: index === 1 && session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0,
+            pollLimit: index === 1 ? MAX_POLLS_PER_REFRESH : 0,
+            trends: index === 1 && !topic,
+            imageLimit: settings.images.enabled && index <= settings.images.perRefresh ? 1 : 0,
+        };
+    });
+    await runJobs(postJobs, cast.length ? width : 1, 'posts');
+
+    const counts = { reply: settings.quotas.replies, repost: settings.quotas.reposts, like: settings.quotas.likes };
+    if (!activeKeys.size && Object.values(counts).some(Boolean)) {
+        all.warnings.push('reactions: skipped, no active account exists');
+        counts.reply = 0;
+        counts.repost = 0;
+        counts.like = 0;
     }
+    const interactionJobs = [];
+    for (let offset = 0; offset < Math.max(...Object.values(counts)); offset += 1) {
+        for (const kind of ['reply', 'repost', 'like']) {
+            if (offset < counts[kind]) {
+                interactionJobs.push({ kind, index: offset + 1, total: counts[kind], strangers: 0, pollLimit: 0, trends: false, imageLimit: 0 });
+            }
+        }
+    }
+    await runJobs(interactionJobs, width, 'reactions');
+    await commits;
 
-    if (!successfulTurns && firstTransportError) {
+    if (!committedRequests && firstTransportError) {
         throw firstTransportError;
     }
     if (all.strangers.length) {
-        // Anyone new joins the cast for the next refresh.
         await currentAccounts(sessionId);
     }
-    if (successfulTurns) {
+    if (committedRequests) {
         updateSession(sessionId, { lastRefreshAt: Date.now() });
     }
-    return all;
-}
-
-function authorKeysForTurn(author, accounts, activeKeys) {
-    return author
-        ? [author.key]
-        : accounts.filter(account => account.kind === KIND_AMBIENT && activeKeys.has(account.key)).map(account => account.key);
-}
-
-async function runIncrementalRefresh(batch) {
-    const { sessionId, feed, signal, onProgress, accounts, active, persona, session, settings, activeKeys, newId, topic, scene } = batch;
-    const quotas = settings.quotas;
-    const total = quotas.posts;
-    const remaining = { replies: quotas.replies, reposts: quotas.reposts, likes: quotas.likes };
-    let strangersLeft = session.ambient ? MAX_NEW_STRANGERS_PER_REFRESH : 0;
-    let pollsLeft = MAX_POLLS_PER_REFRESH;
-    let imagesLeft = settings.images.enabled ? settings.images.perRefresh : 0;
-    let strangerPostsLeft = 1;
-    const cast = active.filter(account => account.kind === KIND_CHARACTER);
-    const all = { posts: [], interactions: [], follows: [], strangers: [], trends: [], warnings: [] };
-    let emptyTurns = 0;
-    let liveAccounts = accounts;
-
-    for (let index = 1; index <= total; index += 1) {
-        signal?.throwIfAborted();
-        const author = cast.length ? cast[(index - 1) % cast.length] : null;
-        if (!author && strangersLeft <= 0 && !liveAccounts.some(account => account.kind === KIND_AMBIENT && activeKeys.has(account.key))) {
-            break;
-        }
-        onProgress(`Post ${index} of ${total}...`);
-        const turnSettings = {
-            ...settings,
-            quotas: { posts: 1, replies: remaining.replies, reposts: remaining.reposts, likes: remaining.likes },
-            images: { ...settings.images, perRefresh: Math.min(1, imagesLeft) },
-        };
-        const messages = buildRefreshMessages({
-            accounts: liveAccounts,
-            active: liveAccounts.filter(account => activeKeys.has(account.key)),
-            persona,
-            session,
-            posts: feed.posts,
-            interactions: feed.interactions,
-            settings: turnSettings,
-            now: Date.now(),
-            localTime: new Date().toLocaleString(),
-            strangers: strangersLeft,
-            pollLimit: pollsLeft,
-            scene,
-            turn: { index, total, author, remaining },
-            // One set of made-up trends per refresh is plenty; the first turn writes them, and a topic refresh keeps the bar.
-            trends: index === 1 && !topic,
-            topic,
-        });
-        const parsed = await generateBatch(messages, settings.maxTokens, { ...batch, active: liveAccounts.filter(account => activeKeys.has(account.key)) });
-        if (!parsed) {
-            all.warnings.push(`turn ${index}: the model did not return usable JSON, skipped`);
-            emptyTurns += 1;
-            if (emptyTurns >= 2) {
-                break;
-            }
-            continue;
-        }
-        const result = materializeRefresh(parsed, {
-            accounts: liveAccounts,
-            allowedActorKeys: [...activeKeys],
-            allowedPostAuthorKeys: authorKeysForTurn(author, liveAccounts, activeKeys),
-            allowNewStrangerPosts: !author,
-            settings: turnSettings,
-            posts: feed.posts,
-            interactions: feed.interactions,
-            newId,
-            now: Date.now(),
-            strangerLimit: strangersLeft,
-            strangerPostLimit: strangerPostsLeft,
-            pollLimit: pollsLeft,
-            imageLimit: imagesLeft,
-            requiredTopic: topic,
-            allowTrends: index === 1 && !topic,
-        });
-        const imagesUsed = result.posts.filter(post => post.image?.prompt).length;
-        const pollsUsed = result.posts.filter(post => post.poll).length;
-        const strangerPostsUsed = result.posts.filter(post => post.authorSnapshot?.kind === KIND_AMBIENT).length;
-        await commitBatch(result, batch);
-        for (const key of ['posts', 'interactions', 'follows', 'strangers', 'trends', 'warnings']) {
-            all[key].push(...result[key]);
-        }
-        for (const item of result.interactions) {
-            if (item.type === 'reply') {
-                remaining.replies = Math.max(0, remaining.replies - 1);
-            } else if (item.type === 'repost') {
-                remaining.reposts = Math.max(0, remaining.reposts - 1);
-            } else {
-                remaining.likes = Math.max(0, remaining.likes - 1);
-            }
-        }
-        strangersLeft = Math.max(0, strangersLeft - result.strangers.length);
-        pollsLeft = Math.max(0, pollsLeft - pollsUsed);
-        imagesLeft = Math.max(0, imagesLeft - imagesUsed);
-        strangerPostsLeft = Math.max(0, strangerPostsLeft - strangerPostsUsed);
-        if (result.strangers.length) {
-            // New strangers join the cast for the rest of the refresh.
-            liveAccounts = await currentAccounts(sessionId);
-            for (const stranger of result.strangers) {
-                activeKeys.add(`${KIND_AMBIENT}:${stranger.id}`);
-            }
-        }
-        emptyTurns = result.posts.length || result.interactions.length ? 0 : emptyTurns + 1;
-        if (emptyTurns >= 2) {
-            all.warnings.push('two quiet turns in a row, stopped early');
-            break;
-        }
-    }
-
-    updateSession(sessionId, { lastRefreshAt: Date.now() });
     return all;
 }
 
