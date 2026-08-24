@@ -726,11 +726,6 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     gap: 0.6rem;
 }
 
-.sbtw-post-main > .sbtw-replies {
-    margin-left: calc(-2.75rem - var(--sbtw-gap));
-    padding-left: 0;
-}
-
 .sbtw-reply {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -741,6 +736,12 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 
 .sbtw-reply-head {
     display: contents;
+}
+
+.sbtw-reply-head > .sbtw-avatar-button {
+    position: relative;
+    align-items: center;
+    justify-content: center;
 }
 
 .sbtw-reply-head .sbtw-meta {
@@ -1301,6 +1302,21 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 
     .sbtw-post .sbtw-meta:has(> .sbtw-delete) {
         padding-right: 2rem;
+    }
+
+    .sbtw-reply-head > .sbtw-avatar-button {
+        min-width: 2rem;
+        min-height: 2rem;
+    }
+
+    .sbtw-reply-head > .sbtw-avatar-button::before {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 44px;
+        height: 44px;
+        transform: translate(-50%, -50%);
+        content: '';
     }
 }
 
