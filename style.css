@@ -564,10 +564,12 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     cursor: pointer;
 }
 
+/* Icon-to-number is this gap plus the icon button's right padding and the count
+   button's left padding: 14.4px, which .sbtw-action-count matches inside a button. */
 .sbtw-action-group {
     display: inline-flex;
     align-items: center;
-    gap: 0.15rem;
+    gap: 0.2rem;
 }
 
 .sbtw-action-who {
@@ -681,7 +683,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.35rem;
+    gap: 0.5rem;
     padding: 0.3rem 0.4rem;
     border: none;
     border-radius: 999px;
@@ -713,6 +715,12 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 
 .sbtw-action-count {
     font-variant-numeric: tabular-nums;
+}
+
+/* A count inside its button (no who-list to open) has no padding of its own, so it
+   takes the difference here and sits at the same distance as a count button does. */
+.sbtw-action > .sbtw-action-count {
+    margin-left: 0.4rem;
 }
 
 /* --- replies ------------------------------------------------------------ */
@@ -1306,8 +1314,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     }
 
     .sbtw-actions,
-    .sbtw-reply-actions,
-    .sbtw-action-group {
+    .sbtw-reply-actions {
         gap: 1.5rem;
     }
 
@@ -1327,6 +1334,12 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
         height: 44px;
         transform: translate(-50%, -50%);
         content: '';
+    }
+
+    /* A count sits close to its icon and is painted after it, so a 44px-wide box
+       would take the icon's right half. It keeps the full height, its own width. */
+    .sbtw-action-who::before {
+        width: 100%;
     }
 
     .sbtw-post .sbtw-meta:has(> .sbtw-delete) {
