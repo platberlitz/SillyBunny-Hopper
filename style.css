@@ -1305,6 +1305,12 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
         content: '';
     }
 
+    .sbtw-actions,
+    .sbtw-reply-actions,
+    .sbtw-action-group {
+        gap: 1.5rem;
+    }
+
     .sbtw-action,
     .sbtw-action-who {
         position: relative;
