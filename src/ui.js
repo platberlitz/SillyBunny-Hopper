@@ -1188,7 +1188,7 @@ function composerBar(canPost, postField = null) {
             text: state.status,
             attrs: { role: 'status', 'aria-live': 'polite' },
         }),
-        canPost ? button('Post', 'sbtw-btn sbtw-btn-primary sbtw-post-button', () => publish(postField.value), { focusKey: 'publish' }) : null,
+        canPost ? button('Post', 'sbtw-btn sbtw-btn-primary', () => publish(postField.value), { focusKey: 'publish' }) : null,
     ]);
 }
 
