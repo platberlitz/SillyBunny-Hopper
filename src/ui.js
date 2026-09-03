@@ -35,6 +35,7 @@ const WAND_ID = 'sbtw-wand-button';
 const DRAWER_ID = 'sbtw-drawer';
 const EXTENSION_NAME = 'SillyBunny-Hopper';
 const FEED_LIMIT = 160;
+const NOTIFICATION_LIMIT = 50;
 const SEARCH_DEBOUNCE_MS = 150;
 
 const state = {
@@ -607,6 +608,7 @@ function pollNode(post) {
             attrs: {
                 type: 'button',
                 'aria-pressed': String(selected),
+                title: selected ? 'Withdraw your vote' : null,
                 'data-focus-key': `poll:${post.id}:${index}`,
                 disabled: personaAccount() ? null : 'disabled',
             },
@@ -949,7 +951,7 @@ function postNode(post, repost = null, { compact = false } = {}) {
                             className: 'sbtw-delete',
                             attrs: { type: 'button', title: 'Delete post', 'aria-label': 'Delete post', 'data-focus-key': `delete-post:${post.id}` },
                             on: { click: () => deletePost(post) },
-                        }, [icon('fa-ellipsis')])
+                        }, [icon('fa-trash-can')])
                         : null,
                 ]),
                 el('div', { className: 'sbtw-body' }, [bodyNode(post.body)]),
@@ -1036,6 +1038,13 @@ function replyComposer(post) {
     // The draft survives re-renders; focus is only claimed when the composer opens.
     field.value = replyDrafts.get(key) ?? '';
     field.addEventListener('input', () => { replyDrafts.set(key, field.value); });
+    field.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            event.stopPropagation();
+            send.click();
+        }
+    });
     attachMentionPicker(field);
     if (pendingReplyFocus === key) {
         pendingReplyFocus = null;
@@ -1134,7 +1143,7 @@ function attachMentionPicker(field) {
             event.preventDefault();
             active = (active - 1 + items.length) % items.length;
             update();
-        } else if (event.key === 'Enter' || event.key === 'Tab') {
+        } else if ((event.key === 'Enter' && !event.ctrlKey && !event.metaKey) || event.key === 'Tab') {
             event.preventDefault();
             apply(items[active]);
         } else if (event.key === 'Escape') {
@@ -1209,7 +1218,19 @@ function composer() {
     field.addEventListener('input', () => { state.draft.text = field.value; });
     // Empty and idle it is a single line, so the feed starts sooner on a phone; it opens up to write in.
     field.addEventListener('focus', () => { field.rows = 3; });
-    field.addEventListener('blur', () => { if (!field.value.trim()) { field.rows = 1; } });
+    // The collapse waits out a click: shrinking on mousedown would pull the button you aimed at away before mouseup.
+    field.addEventListener('blur', () => {
+        setTimeout(() => { if (document.activeElement !== field && !field.value.trim()) { field.rows = 1; } }, 250);
+    });
+    // Ctrl/Cmd+Enter posts; plain Enter still makes a new line. Propagation stops here
+    // because the host binds Ctrl+Enter on the document to Regenerate.
+    field.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            event.stopPropagation();
+            publish(field.value);
+        }
+    });
     attachMentionPicker(field);
 
     const extras = el('div', { className: 'sbtw-composer-extras' });
@@ -1670,7 +1691,8 @@ function notificationsView() {
         }, [el('span', { text: `${label} ${groups[value].length}` }), fresh ? badgeNode(fresh) : null]);
     }));
 
-    const rows = (groups[state.notifTab] ?? groups.likes).slice(0, 50);
+    const all = groups[state.notifTab] ?? groups.likes;
+    const rows = all.slice(0, NOTIFICATION_LIMIT);
     const list = rows.map(item => el('button', {
         className: `sbtw-notification${isNew(item) ? ' sbtw-notification-new' : ''}`,
         attrs: { type: 'button' },
@@ -1707,6 +1729,9 @@ function notificationsView() {
         list.length
             ? el('div', { className: 'sbtw-list' }, list)
             : el('div', { className: 'sbtw-empty', text: NOTIFICATION_EMPTY[state.notifTab] ?? NOTIFICATION_EMPTY.likes }),
+        all.length > rows.length
+            ? el('p', { className: 'sbtw-hint sbtw-list-note', text: `Showing the newest ${rows.length} of ${all.length}. Older ones are still on the timeline.` })
+            : null,
     ]);
 }
 
@@ -2538,6 +2563,11 @@ function publish(text) {
     });
     state.draft = { text: '', image: '', poll: null };
     state.tab = 'main';
+    // render() hands the focused field its old text back (so a background re-render never
+    // eats what you are typing); when posting from the keyboard the field is still focused.
+    if (document.activeElement instanceof HTMLTextAreaElement && document.activeElement.dataset.focusKey === 'post-composer') {
+        document.activeElement.value = '';
+    }
     persist();
     render();
 }
@@ -2644,7 +2674,10 @@ function vote(post, index) {
         return;
     }
     const existing = myInteraction(post.id, 'vote');
-    if (existing) {
+    if (existing && existing.pollOptionIndex === index) {
+        // Tapping your own choice again withdraws the vote, like unlike and unrepost.
+        state.feed.interactions = state.feed.interactions.filter(item => item !== existing);
+    } else if (existing) {
         // Changing your mind is allowed; voting twice is not.
         existing.pollOptionIndex = index;
         existing.createdAt = Date.now();
