@@ -316,24 +316,28 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     align-items: center;
     gap: 0.6rem;
     padding: 0.55rem 0.75rem;
-    border: none;
-    border-radius: 999px;
+    border: 1px solid transparent;
+    border-radius: var(--sbtw-radius-button);
     background: transparent;
     color: inherit;
     font-size: 1em;
     text-align: left;
     cursor: pointer;
     min-height: var(--sb-control-min-height, 2.2rem);
-    transition: background var(--sbtw-transition), color var(--sbtw-transition);
+    transition: background var(--sbtw-transition), border-color var(--sbtw-transition), color var(--sbtw-transition);
 }
 
 .sbtw-nav-item:hover {
     background: var(--sbtw-hover);
 }
 
+/* Current view: the host's raised panel with a thin border and a restrained accent along the bottom edge
+   (drawn inset so the row never changes height), never a filled pill. */
 .sbtw-nav-on {
     font-weight: 700;
-    color: var(--sbtw-accent);
+    background: var(--sbtw-raised);
+    border-color: var(--sbtw-control-border);
+    box-shadow: inset 0 -2px 0 var(--sbtw-accent);
 }
 
 /* Unread badge: accent on the theme's own surface colour, so it reads in light and dark themes alike. */
@@ -433,6 +437,12 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     font-size: 1em;
     cursor: pointer;
     transition: background var(--sbtw-transition), border-color var(--sbtw-transition), color var(--sbtw-transition);
+}
+
+/* The host rounds every button (the Paper theme does it with !important on a two-class selector); a tab's
+   underline has to run square into the row's divider, so this outranks it on specificity as well. */
+#sheld[data-sbtw-mode='on'] .sbtw-tab {
+    border-radius: 0 !important;
 }
 
 .sbtw-tab:hover {
