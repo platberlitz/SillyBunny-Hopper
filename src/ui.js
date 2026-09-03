@@ -88,6 +88,11 @@ function invalidateWork() {
     workController = null;
 }
 
+/** The user's Stop button: aborts the running model work but keeps the run live, so its own catch reports the outcome. */
+function stopWork() {
+    workController?.abort();
+}
+
 function isLive(epoch) {
     return epoch === sessionEpoch && state.body !== null;
 }
@@ -1140,11 +1145,10 @@ function composerBar(canPost, postField = null) {
         canPost && api.getSettings().polls && !state.draft.poll
             ? button('Poll', 'sbtw-btn sbtw-btn-quiet', () => { state.draft.poll = ['', '']; render(); }, { iconName: 'fa-square-poll-vertical' })
             : null,
-        el('button', {
-            className: 'sbtw-btn sbtw-btn-primary',
-            attrs: { type: 'button', disabled: state.busy ? 'disabled' : null, 'aria-label': state.busy ? 'Refresh in progress' : 'Refresh timeline', 'data-focus-key': 'refresh' },
-            on: { click: () => refresh() },
-        }, [icon(state.busy ? 'fa-spinner fa-spin' : 'fa-rotate'), el('span', { text: state.busy ? 'Working...' : 'Refresh' })]),
+        // While the model works the same slot becomes Stop: a refresh is a request, not a commitment.
+        state.busy
+            ? button('Stop', 'sbtw-btn', stopWork, { iconName: 'fa-stop', title: 'Stop the model; whatever has landed stays', ariaLabel: 'Stop the model', focusKey: 'refresh' })
+            : button('Refresh', 'sbtw-btn', () => refresh(), { iconName: 'fa-rotate', title: 'Ask the model for new activity', ariaLabel: 'Refresh timeline', focusKey: 'refresh' }),
         el('span', { className: 'sbtw-spacer' }),
         // Live region: progress updates are announced without stealing focus.
         el('span', {
@@ -2634,6 +2638,8 @@ async function refresh({ topic = '' } = {}) {
     const sessionId = state.session.id;
     const { epoch, signal } = freshSignal();
     let runs = ++refreshRuns;
+    // Committed items are pushed into state.feed as they land; the diff is what a Stop keeps.
+    const before = { posts: state.feed.posts.length, reactions: state.feed.interactions.length };
     render();
     try {
         const result = await api.runRefresh({
@@ -2686,6 +2692,18 @@ async function refresh({ topic = '' } = {}) {
             return;
         }
         state.status = '';
+        if (signal.aborted) {
+            // Stopped by the user. Everything committed before the stop is already durable and stays.
+            state.feedEpoch += 1;
+            state.session = api.getSession(sessionId);
+            await refreshAccounts(sessionId).catch(cause => console.warn('[Hopper] accounts did not refresh after the stop', cause));
+            const posts = state.feed.posts.length - before.posts;
+            const reactions = state.feed.interactions.length - before.reactions;
+            toast(posts || reactions
+                ? `Refresh stopped. ${posts} post(s) and ${reactions} reaction(s) that had landed stay.`
+                : 'Refresh stopped.', 'info');
+            return;
+        }
         // Provider errors are remote text; show a fixed message and keep the raw one local.
         console.error('[Hopper] refresh failed', error);
         toast('The refresh failed - check your connection settings, then try again.', 'error');
