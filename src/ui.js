@@ -574,7 +574,7 @@ function pollNode(post) {
                 type: 'button',
                 'aria-pressed': String(selected),
                 'data-focus-key': `poll:${post.id}:${index}`,
-                disabled: personaAccount() && !state.busy ? null : 'disabled',
+                disabled: personaAccount() ? null : 'disabled',
             },
             on: { click: () => vote(post, index) },
         }, [
@@ -605,7 +605,7 @@ function imageNode(post) {
         img.addEventListener('load', () => {
             if (img.naturalWidth && img.naturalHeight && !post.image.width
                 && img.isConnected && state.body?.isConnected && state.feed === feed
-                && state.session?.id === sessionId && !state.busy) {
+                && state.session?.id === sessionId) {
                 post.image.width = img.naturalWidth;
                 post.image.height = img.naturalHeight;
                 api.saveFeedDebounced(feed, 1200, sessionId);
@@ -701,7 +701,7 @@ function actionButton(ownerId, me, iconName, count, active, onClick, label, who 
             'aria-label': label,
             'aria-pressed': String(active),
             'data-focus-key': `action:${ownerId}:${iconName}`,
-            disabled: !me || state.busy ? 'disabled' : null,
+            disabled: me ? null : 'disabled',
         },
         on: { click: onClick },
     }, [icon(iconName)]);
@@ -811,14 +811,12 @@ function replyNode(reply) {
                         iconName: 'fa-comment',
                         ariaLabel: `Reply to @${handle}`,
                         pressed: targeted,
-                        disabled: state.busy,
                         focusKey: `reply:${reply.id}`,
                     }) : null,
                 me?.key === reply.actorKey
                     ? button('Delete', 'sbtw-action sbtw-action-danger', () => deleteReply(reply), {
                         iconName: 'fa-trash',
                         ariaLabel: 'Delete your reply',
-                        disabled: state.busy,
                         focusKey: `delete-reply:${reply.id}`,
                     })
                     : null,
@@ -915,7 +913,7 @@ function postNode(post, repost = null, { compact = false } = {}) {
                     mine
                         ? el('button', {
                             className: 'sbtw-delete',
-                            attrs: { type: 'button', title: 'Delete post', 'aria-label': 'Delete post', 'data-focus-key': `delete-post:${post.id}`, disabled: state.busy ? 'disabled' : null },
+                            attrs: { type: 'button', title: 'Delete post', 'aria-label': 'Delete post', 'data-focus-key': `delete-post:${post.id}` },
                             on: { click: () => deletePost(post) },
                         }, [icon('fa-ellipsis')])
                         : null,
@@ -1019,7 +1017,7 @@ function replyComposer(post) {
             return;
         }
         addReply(post, text, target.parentInteractionId);
-    }, { disabled: state.busy, focusKey: `send-reply:${key}` });
+    }, { focusKey: `send-reply:${key}` });
     return el('div', { className: 'sbtw-reply-composer' }, [
         parent ? el('div', { className: 'sbtw-replying', text: `Replying to @${parentHandle}` }) : null,
         field,
@@ -1156,7 +1154,7 @@ function composerBar(canPost, postField = null) {
             text: state.status,
             attrs: { role: 'status', 'aria-live': 'polite' },
         }),
-        canPost ? button('Post', 'sbtw-btn sbtw-btn-primary sbtw-post-button', () => publish(postField.value), { disabled: state.busy, focusKey: 'publish' }) : null,
+        canPost ? button('Post', 'sbtw-btn sbtw-btn-primary sbtw-post-button', () => publish(postField.value), { focusKey: 'publish' }) : null,
     ]);
 }
 
@@ -1359,7 +1357,7 @@ function profileView() {
                 canFollow
                     ? button(following.has(account.key) ? 'Following' : 'Follow',
                         `sbtw-btn ${following.has(account.key) ? 'sbtw-btn-quiet' : 'sbtw-btn-primary'}`,
-                        () => toggleFollow(account.key), { disabled: state.busy, focusKey: `follow:${account.key}` })
+                        () => toggleFollow(account.key), { focusKey: `follow:${account.key}` })
                     : null,
                 account.kind === KIND_CHARACTER
                     ? button('New profile', 'sbtw-btn sbtw-btn-quiet', () => void rewriteProfile(account.key), {
@@ -2066,7 +2064,7 @@ function whoToFollow() {
                 el('button', { className: 'sbtw-name', text: account.name, attrs: { type: 'button' }, on: { click: () => showProfile(account.key) } }),
                 el('span', { className: 'sbtw-handle', text: `@${account.handle}` }),
             ]),
-            button('Follow', 'sbtw-btn sbtw-btn-quiet', () => toggleFollow(account.key), { disabled: state.busy, focusKey: `follow:${account.key}` }),
+            button('Follow', 'sbtw-btn sbtw-btn-quiet', () => toggleFollow(account.key), { focusKey: `follow:${account.key}` }),
         ])),
     ]);
 }
@@ -2403,9 +2401,6 @@ async function refreshAccounts(sessionId = state.session?.id) {
 }
 
 function publish(text) {
-    if (state.busy) {
-        return;
-    }
     const me = personaAccount();
     const body = String(text ?? '').trim();
     if (!me || (!body && !state.draft.image)) {
@@ -2446,9 +2441,6 @@ function publish(text) {
 }
 
 function addReply(post, text, parentInteractionId = null) {
-    if (state.busy) {
-        return;
-    }
     const me = personaAccount();
     if (!me) {
         return;
@@ -2483,7 +2475,7 @@ function addReply(post, text, parentInteractionId = null) {
 
 async function deleteReply(reply) {
     const me = personaAccount();
-    if (state.busy || !me || reply.actorKey !== me.key) {
+    if (!me || reply.actorKey !== me.key) {
         return;
     }
     const body = state.body;
@@ -2494,7 +2486,7 @@ async function deleteReply(reply) {
         'Delete this reply?',
         'Replies to it will stay in the conversation.',
     );
-    if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed || state.busy) {
+    if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed) {
         return;
     }
     // Likes and reposts of the comment go with it; replies to it stay, unthreaded.
@@ -2512,9 +2504,6 @@ async function deleteReply(reply) {
 
 /** Like or repost a post, or with `reply` that comment itself; a second tap takes it back. */
 function toggle(postId, type, reply = null) {
-    if (state.busy) {
-        return;
-    }
     const me = personaAccount();
     if (!me) {
         return;
@@ -2541,9 +2530,6 @@ function toggle(postId, type, reply = null) {
 }
 
 function vote(post, index) {
-    if (state.busy) {
-        return;
-    }
     const me = personaAccount();
     if (!me) {
         return;
@@ -2572,15 +2558,12 @@ function vote(post, index) {
 }
 
 async function deletePost(post) {
-    if (state.busy) {
-        return;
-    }
     const body = state.body;
     const sessionId = state.session?.id;
     const feed = state.feed;
     const context = globalThis.SillyTavern.getContext();
     const confirmed = await context.Popup.show.confirm('Delete this post?', 'Its replies, likes and reposts go too.');
-    if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed || state.busy) {
+    if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed) {
         return;
     }
     state.feed.posts = state.feed.posts.filter(item => item.id !== post.id);
@@ -2590,19 +2573,19 @@ async function deletePost(post) {
 }
 
 function toggleFollow(targetKey) {
-    if (state.busy) {
-        return;
-    }
     const me = personaAccount();
     if (!me) {
         return;
     }
-    const current = state.session.follows[me.key] ?? [];
+    // A refresh in flight may have committed follows for other actors since state.session
+    // was loaded; merge into the stored session so this tap does not undo them.
+    const session = api.getSession(state.session.id) ?? state.session;
+    const current = session.follows[me.key] ?? [];
     const next = current.includes(targetKey)
         ? current.filter(key => key !== targetKey)
         : [...current, targetKey];
     state.session = api.updateSession(state.session.id, {
-        follows: { ...state.session.follows, [me.key]: next },
+        follows: { ...session.follows, [me.key]: next },
     });
     render();
 }
@@ -2638,8 +2621,9 @@ async function refresh({ topic = '' } = {}) {
     const sessionId = state.session.id;
     const { epoch, signal } = freshSignal();
     let runs = ++refreshRuns;
-    // Committed items are pushed into state.feed as they land; the diff is what a Stop keeps.
-    const before = { posts: state.feed.posts.length, reactions: state.feed.interactions.length };
+    // Tallied per committed wave rather than diffed from the feed length: the user keeps
+    // posting and deleting while the model writes, and a Stop should count only its work.
+    const landed = { posts: 0, reactions: 0 };
     render();
     try {
         const result = await api.runRefresh({
@@ -2660,7 +2644,9 @@ async function refresh({ topic = '' } = {}) {
                 }
             },
             // One-post-at-a-time mode: each committed post is shown as it lands.
-            onPartial: () => {
+            onPartial: (batch) => {
+                landed.posts += batch.posts.length;
+                landed.reactions += batch.interactions.length;
                 if (isLive(epoch) && state.view === 'timeline') {
                     state.feedEpoch += 1;
                     byPost = buildInteractionMap();
@@ -2697,10 +2683,8 @@ async function refresh({ topic = '' } = {}) {
             state.feedEpoch += 1;
             state.session = api.getSession(sessionId);
             await refreshAccounts(sessionId).catch(cause => console.warn('[Hopper] accounts did not refresh after the stop', cause));
-            const posts = state.feed.posts.length - before.posts;
-            const reactions = state.feed.interactions.length - before.reactions;
-            toast(posts || reactions
-                ? `Refresh stopped. ${posts} post(s) and ${reactions} reaction(s) that had landed stay.`
+            toast(landed.posts || landed.reactions
+                ? `Refresh stopped. ${plural(landed.posts, 'post')} and ${plural(landed.reactions, 'reaction')} that had landed stay.`
                 : 'Refresh stopped.', 'info');
             return;
         }
@@ -2749,6 +2733,9 @@ async function resetTimeline() {
     }
     feed.posts = [];
     feed.interactions = [];
+    // A like landed during the write above queued a snapshot of the old feed; replace it
+    // with the empty one so the reset cannot be undone by its own autosave.
+    api.saveFeedDebounced(feed, 1200, sessionId);
     state.busy = false;
     state.view = 'timeline';
     state.timelineSearch = '';

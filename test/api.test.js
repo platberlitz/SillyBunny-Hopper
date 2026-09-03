@@ -1171,6 +1171,30 @@ test('a refresh commits in memory once its upload is durable', async () => {
     assert.ok(getSession(ensureActiveSession().id).lastRefreshAt > 0);
 });
 
+test('a like made while the commit uploads cannot erase the committed post', async () => {
+    current.nextResponse = GOOD_BATCH;
+    updateSettings({ profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });
+    const feed = emptyFeed();
+    const uploads = [];
+    fakeFetch((_url, init) => {
+        uploads.push(decodeUpload(init));
+        if (uploads.length === 1) {
+            // The user likes something while the refresh's candidate feed is still in flight:
+            // this snapshot has the like but not the incoming post.
+            feed.interactions.push({ id: 'like1', postId: 'p0', type: 'like', actorKey: 'persona:me.png' });
+            saveFeedDebounced(feed, 0);
+        }
+        return { ok: true, status: 200, json: async () => ({ path: '/user/files/twitterlike-feed.json' }) };
+    });
+
+    await runRefresh({ feed });
+    await flushFeed();
+
+    assert.equal(feed.posts.length, 1);
+    assert.match(uploads.at(-1), /first post/, 'the last durable feed still has the committed post');
+    assert.match(uploads.at(-1), /like1/, 'and the like made during the upload');
+});
+
 test('a throwing partial observer cannot turn a durable refresh into a failure', async () => {
     current.nextResponse = GOOD_BATCH;
     updateSettings({ profiles: { 'character:ada.png': { handle: 'ada' }, 'character:bo.png': { handle: 'bo' } } });

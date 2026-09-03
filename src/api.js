@@ -1207,12 +1207,20 @@ async function commitBatch(result, { sessionId, feed, signal, onProgress, onPart
         posts: [...feed.posts, ...result.posts],
         interactions: [...feed.interactions, ...result.interactions],
     };
+    const revisionBefore = saveState(sessionId).latestRevision;
     await writeFeed(candidate, sessionId, { signal });
 
     // A successful upload is the commit point. Cancellation after it must not leave the
     // durable feed ahead of the in-memory feed and refresh timestamp.
     feed.posts.push(...result.posts);
     feed.interactions.push(...result.interactions);
+
+    // The user keeps curating while the model writes. A like or delete made during the
+    // upload queued a snapshot that predates these rows; re-queue the merged feed so that
+    // snapshot cannot land afterwards and drop what was just committed.
+    if (saveState(sessionId).latestRevision !== revisionBefore) {
+        saveFeedDebounced(feed, 1200, sessionId);
+    }
 
     if (result.strangers.length) {
         // Strangers are session records: a stranger a later refresh talks to must still exist.
