@@ -1697,11 +1697,20 @@ function field(label, control, hint = '') {
 }
 
 function numberInput(value, min, max, onChange) {
-    return el('input', {
+    const input = el('input', {
         className: 'sbtw-input sbtw-number',
         attrs: { type: 'number', min: String(min), max: String(max), value: String(value) },
-        on: { change: (event) => onChange(Number(event.target.value)) },
     });
+    input.addEventListener('change', () => {
+        const number = Number(input.value);
+        // A cleared or junk field keeps what was there; Number('') is 0 and would slide under min.
+        if (input.value.trim() === '' || !Number.isFinite(number)) {
+            input.value = String(value);
+            return;
+        }
+        onChange(number);
+    });
+    return input;
 }
 
 function checkbox(label, checked, onChange, visual = null) {
