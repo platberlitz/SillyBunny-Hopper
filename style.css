@@ -1023,6 +1023,43 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     color: var(--sbtw-danger);
 }
 
+/* Undo toast: lives in the host's toast container, outside the shell, so it only uses host tokens. */
+.sbtw-undo {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.sbtw-undo-button {
+    flex: none;
+    min-height: 2rem;
+    padding: 0.25em 0.75em;
+    border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+    border-radius: var(--sb-radius-button, 0.875rem);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.sbtw-undo-button:hover {
+    border-color: currentColor;
+}
+
+.sbtw-undo-button:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+    .sbtw-undo-button {
+        min-height: 44px;
+        min-width: 44px;
+    }
+}
+
 .sbtw-status {
     flex: 0 1 auto;
     min-width: 0;

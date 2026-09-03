@@ -42,6 +42,8 @@ import {
     summarizeRefresh,
     buildSystemPrompt,
     reasoningOverridesFrom,
+    removeReply,
+    restoreReply,
 } from '../src/core.js';
 
 const NOW = 1_700_000_000_000;
@@ -1358,4 +1360,21 @@ test('trends are normalised, deduped, capped at eight, and formatted as counts',
     assert.deepEqual([formatCount(0), formatCount(999), formatCount(1234), formatCount(12345), formatCount(2500000)], ['0', '999', '1.2K', '12K', '2.5M']);
     assert.deepEqual(parseRefreshResponse('{"posts":[],"trends":[{"topic":"x","posts":3}]}').trends, [{ topic: 'x', posts: 3 }]);
     assert.deepEqual(normalizeSession({ trends: [{ topic: 'kept', posts: 2 }] }).trends.map(t => t.topic), ['kept']);
+});
+
+test('removing a reply takes its likes along, unthreads its children, and restore puts everything back', () => {
+    const rows = [
+        { id: 'r1', type: 'reply', postId: 'p', parentInteractionId: null },
+        { id: 'like', type: 'like', postId: 'p', parentInteractionId: 'r1' },
+        { id: 'child', type: 'reply', postId: 'p', parentInteractionId: 'r1' },
+        { id: 'other', type: 'like', postId: 'p', parentInteractionId: null },
+    ];
+    const taken = removeReply(rows, 'r1');
+    assert.deepEqual(taken.interactions.map(item => item.id), ['child', 'other']);
+    assert.equal(taken.interactions[0].parentInteractionId, null);
+    assert.deepEqual(taken.removed.map(item => item.id), ['r1', 'like']);
+    const back = restoreReply(taken.interactions, 'r1', taken);
+    assert.deepEqual(back.map(item => item.id).sort(), ['child', 'like', 'other', 'r1']);
+    assert.equal(back.find(item => item.id === 'child').parentInteractionId, 'r1');
+    assert.deepEqual(rows.map(item => item.parentInteractionId), [null, 'r1', 'r1', null], 'input is never mutated');
 });

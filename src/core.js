@@ -1881,3 +1881,26 @@ export function countUnseen(groups, seenAt = 0) {
 export function engagementScore({ like = 0, reply = 0, repost = 0, vote = 0 } = {}) {
     return (Number(like) || 0) + 2 * (Number(reply) || 0) + 2 * (Number(repost) || 0) + (Number(vote) || 0);
 }
+
+/**
+ * Take a reply out of the conversation: its likes and reposts go with it, replies to it stay, unthreaded.
+ * Returns what is needed to put it back exactly.
+ */
+export function removeReply(interactions, replyId) {
+    const removed = interactions.filter(item => item.id === replyId
+        || ((item.type === 'like' || item.type === 'repost') && item.parentInteractionId === replyId));
+    const unthreaded = interactions
+        .filter(item => !removed.includes(item) && item.parentInteractionId === replyId)
+        .map(item => item.id);
+    const kept = interactions
+        .filter(item => !removed.includes(item))
+        .map(item => unthreaded.includes(item.id) ? { ...item, parentInteractionId: null } : item);
+    return { interactions: kept, removed, unthreaded };
+}
+
+/** Undo removeReply: the removed rows return and the unthreaded replies hang off the reply again. */
+export function restoreReply(interactions, replyId, { removed, unthreaded }) {
+    return interactions
+        .map(item => unthreaded.includes(item.id) ? { ...item, parentInteractionId: replyId } : item)
+        .concat(removed);
+}

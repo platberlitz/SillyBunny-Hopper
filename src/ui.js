@@ -25,6 +25,8 @@ import {
     mentionsHandle,
     summarizeRefresh,
     isAnswerable,
+    removeReply,
+    restoreReply,
 } from './core.js';
 import * as api from './api.js';
 
@@ -171,6 +173,38 @@ function button(label, className, onClick, { iconName = '', title = '', ariaLabe
 
 function toast(message, type = 'info') {
     globalThis.toastr?.[type]?.(message, 'Hopper');
+}
+
+const UNDO_WINDOW = 8000;
+
+/**
+ * A toast with a real Undo button. Focus moves onto the button so keyboard users can reach it; toastr
+ * keeps a focused toast alive, so the timer is re-armed when focus leaves. Returns false without toastr.
+ */
+function undoToast(message, undo) {
+    const toastr = globalThis.toastr;
+    if (!toastr) {
+        return false;
+    }
+    let $toast = null;
+    const undoButton = button('Undo', 'sbtw-undo-button', () => {
+        toastr.clear($toast, { force: true });
+        undo();
+    });
+    undoButton.addEventListener('blur', () => setTimeout(() => toastr.clear($toast), UNDO_WINDOW));
+    const node = el('span', { className: 'sbtw-undo' }, [el('span', { text: message }), undoButton]);
+    $toast = toastr.info(node, 'Hopper', {
+        escapeHtml: false,
+        tapToDismiss: false,
+        timeOut: UNDO_WINDOW,
+        extendedTimeOut: UNDO_WINDOW,
+    });
+    undoButton.focus({ preventScroll: true });
+    return true;
+}
+
+function focusControl(key) {
+    state.body?.querySelector(`[data-focus-key="${key}"]`)?.focus({ preventScroll: true });
 }
 
 // Bumped on every image pick; a finished upload with a stale token is discarded.
@@ -2489,10 +2523,8 @@ async function deleteReply(reply) {
     if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed) {
         return;
     }
-    // Likes and reposts of the comment go with it; replies to it stay, unthreaded.
-    feed.interactions = feed.interactions
-        .filter(item => item.id !== reply.id && !(onComment(item) && item.parentInteractionId === reply.id))
-        .map(item => item.parentInteractionId === reply.id ? { ...item, parentInteractionId: null } : item);
+    const { interactions, ...taken } = removeReply(feed.interactions, reply.id);
+    feed.interactions = interactions;
     if (state.replyingTo?.parentInteractionId === reply.id) {
         replyDrafts.delete(replyTargetKey(state.replyingTo));
         state.replyingTo = null;
@@ -2500,6 +2532,15 @@ async function deleteReply(reply) {
     }
     persist();
     render();
+    undoToast('Reply deleted.', () => {
+        if (state.body !== body || state.feed !== feed) {
+            return;
+        }
+        feed.interactions = restoreReply(feed.interactions, reply.id, taken);
+        persist();
+        render();
+        focusControl(`delete-reply:${reply.id}`);
+    });
 }
 
 /** Like or repost a post, or with `reply` that comment itself; a second tap takes it back. */
@@ -2566,10 +2607,21 @@ async function deletePost(post) {
     if (!confirmed || state.body !== body || state.session?.id !== sessionId || state.feed !== feed) {
         return;
     }
-    state.feed.posts = state.feed.posts.filter(item => item.id !== post.id);
-    state.feed.interactions = state.feed.interactions.filter(item => item.postId !== post.id);
+    const removed = feed.interactions.filter(item => item.postId === post.id);
+    feed.posts = feed.posts.filter(item => item.id !== post.id);
+    feed.interactions = feed.interactions.filter(item => item.postId !== post.id);
     persist();
     render();
+    undoToast('Post deleted.', () => {
+        if (state.body !== body || state.feed !== feed) {
+            return;
+        }
+        feed.posts.push(post);
+        feed.interactions.push(...removed);
+        persist();
+        render();
+        focusControl(`delete-post:${post.id}`);
+    });
 }
 
 function toggleFollow(targetKey) {
