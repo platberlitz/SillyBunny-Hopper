@@ -8,7 +8,7 @@ A pretend social timeline for a SillyBunny cast. Each timeline belongs to a pers
 
 | A stranger's profile (invented by the model) | The cast in Settings |
 | --- | --- |
-| ![A stranger's profile with bio, follow counts and the posts they liked](screenshots/profile.png) | ![Settings: the timeline identity and the persona profile, with the button that asks the model to write it](screenshots/settings.png) |
+| ![A stranger's profile with bio, follow counts and their recent posts](screenshots/profile.png) | ![Settings: the invited characters and the strangers toggle under Who posts, with the profile group folded below](screenshots/settings.png) |
 
 | Trending, with made-up topics | Typing @ in the composer |
 | --- | --- |
