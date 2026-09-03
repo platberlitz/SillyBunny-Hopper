@@ -602,7 +602,7 @@ function pollNode(post) {
         const share = total ? Math.round((count / total) * 100) : 0;
         const selected = mine?.pollOptionIndex === index;
         const bar = el('span', { className: 'sbtw-poll-bar' });
-        bar.style.setProperty('--sbtw-poll-share', `${share}%`);
+        bar.style.setProperty('--sbtw-poll-share', String(share / 100));
         const row = el('button', {
             className: `sbtw-poll-option${selected ? ' sbtw-poll-mine' : ''}`,
             attrs: {
