@@ -1203,10 +1203,13 @@ function composer() {
 
     const field = el('textarea', {
         className: 'sbtw-input sbtw-composer-input',
-        attrs: { rows: '3', maxlength: String(POST_MAX_CHARS), placeholder: "What's happening?", 'aria-label': "What's happening?", 'data-focus-key': 'post-composer' },
+        attrs: { rows: state.draft.text ? '3' : '1', maxlength: String(POST_MAX_CHARS), placeholder: "What's happening?", 'aria-label': "What's happening?", 'data-focus-key': 'post-composer' },
     });
     field.value = state.draft.text;
     field.addEventListener('input', () => { state.draft.text = field.value; });
+    // Empty and idle it is a single line, so the feed starts sooner on a phone; it opens up to write in.
+    field.addEventListener('focus', () => { field.rows = 3; });
+    field.addEventListener('blur', () => { if (!field.value.trim()) { field.rows = 1; } });
     attachMentionPicker(field);
 
     const extras = el('div', { className: 'sbtw-composer-extras' });
@@ -1244,6 +1247,18 @@ function composer() {
     ]);
 }
 
+// Search folds behind a magnifier in the tab row. A live query keeps the row open, so a filter is never invisible.
+let searchOpen = false;
+
+function toggleSearch(open) {
+    searchOpen = open;
+    if (!open) {
+        state.timelineSearch = '';
+    }
+    render();
+    focusControl(open ? 'timeline-search' : 'timeline-search-toggle');
+}
+
 function timelineView() {
     // Looking at the timeline clears the dots for next time; this visit keeps the ones it opened with.
     const latestReply = state.feed.interactions.reduce((latest, item) => item.type === 'reply' ? Math.max(latest, item.createdAt) : latest, 0);
@@ -1253,11 +1268,17 @@ function timelineView() {
     }
     // Plain toggle buttons: a real tab pattern needs arrow-key roving focus and
     // tabpanels we do not have, and mislabelled tabs are worse than honest buttons.
+    const showSearch = searchOpen || Boolean(state.timelineSearch);
     const tabs = el('div', { className: 'sbtw-tabs' }, [
         tabButton('Main', 'main'),
         tabButton('Latest', 'latest'),
         tabButton('Following', 'following'),
         tabButton('Trending', 'trending'),
+        el('button', {
+            className: `sbtw-tab sbtw-tab-search${showSearch ? ' sbtw-tab-on' : ''}`,
+            attrs: { type: 'button', title: 'Search this timeline', 'aria-label': 'Search this timeline', 'aria-expanded': String(showSearch), 'data-focus-key': 'timeline-search-toggle' },
+            on: { click: () => toggleSearch(!showSearch) },
+        }, [icon('fa-magnifying-glass')]),
     ]);
     const results = el('div', { className: 'sbtw-timeline-results' });
     const resultStatus = el('span', {
@@ -1315,6 +1336,12 @@ function timelineView() {
             }
         }, SEARCH_DEBOUNCE_MS);
     });
+    search.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            toggleSearch(false);
+        }
+    });
     drawResults();
 
     // Made-up trending topics, under the Trending tab: tapping one searches the timeline for it.
@@ -1338,7 +1365,7 @@ function timelineView() {
     return el('div', {}, [
         tabs,
         trendsBar,
-        el('div', { className: 'sbtw-timeline-search-row' }, [search, resultStatus]),
+        showSearch ? el('div', { className: 'sbtw-timeline-search-row' }, [search, resultStatus]) : null,
         composer(),
         results,
     ]);

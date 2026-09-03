@@ -276,6 +276,15 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     .sbtw-shell .sbtw-nav-item .sbtw-nav-label {
         display: none;
     }
+
+    /* Compact session bar: the New timeline button keeps its icon and title, drops its label. */
+    .sbtw-shell .sbtw-session-bar {
+        padding-block: 0.35rem;
+    }
+
+    .sbtw-shell .sbtw-session-bar .sbtw-btn:has(> i) span {
+        display: none;
+    }
 }
 
 /* --- navigation --------------------------------------------------------- */
@@ -434,6 +443,12 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     color: inherit;
     font-weight: 700;
     border-bottom-color: var(--sbtw-accent);
+}
+
+/* The magnifier at the end of the tab row: icon-only, does not share the tabs' equal width. */
+.sbtw-tab-search {
+    flex: 0 0 auto;
+    padding-inline: 0.9rem;
 }
 
 .sbtw-list {
@@ -1216,6 +1231,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 .sbtw-session-select {
     min-width: 0;
     flex: 1;
+    margin: 0; /* the host hands every select a 5px margin */
 }
 
 .sbtw-session-bar .sbtw-btn {
@@ -1435,6 +1451,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     .sbtw-logo,
     .sbtw-avatar-button,
     .sbtw-btn,
+    .sbtw-tab-search,
     .sbtw-shell .sbtw-trend {
         min-width: 44px;
     }
