@@ -1720,6 +1720,24 @@ function checkbox(label, checked, onChange, visual = null) {
     return el('label', { className: 'sbtw-check' }, [box, visual, el('span', { text: label })]);
 }
 
+// Settings re-render after every save, so a group the reader opened has to stay open.
+const openSettingsGroups = new Set();
+
+function settingsGroup(title, hint, nodes) {
+    const details = el('details', {
+        className: 'sbtw-settings-group',
+        attrs: { open: openSettingsGroups.has(title) ? 'open' : null },
+        on: { toggle: () => openSettingsGroups[details.open ? 'add' : 'delete'](title) },
+    }, [
+        el('summary', { attrs: { 'data-focus-key': `group:${title}` } }, [
+            el('span', { className: 'sbtw-settings-group-title', text: title }),
+            el('span', { className: 'sbtw-hint', text: hint }),
+        ]),
+        el('div', { className: 'sbtw-settings-group-body' }, nodes),
+    ]);
+    return details;
+}
+
 function settingsView() {
     const settings = api.getSettings();
     const context = globalThis.SillyTavern.getContext();
@@ -1905,7 +1923,22 @@ function settingsView() {
             el('span', { className: 'sbtw-hint', text: 'Equipped only for this timeline; your host persona settings are not changed.' }),
         ]) : null,
 
-        el('h3', { text: 'Persona profile' }),
+        el('h3', { text: 'Who posts' }),
+        groups.length ? field('Use a host group as this timeline\'s cast', groupSelect, 'This copies the group members; you can then adjust the character list below.') : null,
+        // A group of checkboxes cannot live inside a single <label>; each has its own.
+        el('div', { className: 'sbtw-field' }, [
+            el('div', { className: 'sbtw-field-heading' }, [
+                el('span', { className: 'sbtw-field-label', text: 'Characters' }),
+                el('span', { className: 'sbtw-field-tools' }, [inviteCount, clearInvites]),
+            ]),
+            inviteSearch,
+            invites,
+            el('span', { className: 'sbtw-hint', text: 'Only invited characters take part in a refresh.' }),
+        ]),
+        checkbox('Let strangers join in', session.ambient, value => saveSession({ ambient: value })),
+        el('p', { className: 'sbtw-hint', text: `Random passers-by the model invents, not part of the cast. They mostly reply and like, get a profile, and come back later.${session.strangers.length ? ` ${session.strangers.length} so far.` : ''}` }),
+
+        settingsGroup('Your profile', 'Name, handle, bio and location on this timeline.', [
         el('div', { className: 'sbtw-composer-bar' }, [
             button(state.status === 'Writing your profile...' ? 'Writing...' : 'Write it with the model', 'sbtw-btn sbtw-btn-quiet', () => void writePersonaProfile(), {
                 iconName: 'fa-wand-magic-sparkles',
@@ -1936,19 +1969,9 @@ function settingsView() {
             attrs: { type: 'text', value: session.personaProfile.location, maxlength: '160' },
             on: { change: event => saveProfile({ location: event.target.value }) },
         })),
-
-        el('h3', { text: 'Who posts' }),
-        groups.length ? field('Use a host group as this timeline\'s cast', groupSelect, 'This copies the group members; you can then adjust the character list below.') : null,
-        // A group of checkboxes cannot live inside a single <label>; each has its own.
-        el('div', { className: 'sbtw-field' }, [
-            el('div', { className: 'sbtw-field-heading' }, [
-                el('span', { className: 'sbtw-field-label', text: 'Characters' }),
-                el('span', { className: 'sbtw-field-tools' }, [inviteCount, clearInvites]),
-            ]),
-            inviteSearch,
-            invites,
-            el('span', { className: 'sbtw-hint', text: 'Only invited characters take part in a refresh.' }),
         ]),
+
+        settingsGroup('Cast upkeep', 'Fresh profiles for the cast, and the strangers this timeline keeps.', [
         el('div', { className: 'sbtw-field' }, [
             el('span', { className: 'sbtw-field-label', text: 'Profiles' }),
             el('div', { className: 'sbtw-button-row' }, [
@@ -1960,16 +1983,26 @@ function settingsView() {
             ]),
             el('span', { className: 'sbtw-hint', text: 'One request rewrites the handle, name and bio of every invited character; the current handles are ruled out. One character at a time: New profile on their page.' }),
         ]),
-        checkbox('Let strangers join in', session.ambient, value => saveSession({ ambient: value })),
-        el('p', { className: 'sbtw-hint', text: `Random passers-by the model invents, not part of the cast. They mostly reply and like, get a profile, and come back later.${session.strangers.length ? ` ${session.strangers.length} so far.` : ''}` }),
-        el('div', { className: 'sbtw-button-row' }, [
-            button('Forget these strangers', 'sbtw-btn sbtw-btn-quiet', () => forgetStrangers(), {
-                iconName: 'fa-arrows-rotate',
-                title: 'Drop the passers-by this timeline keeps bringing back; the next refresh invents new ones',
-                disabled: state.busy,
-            }),
+        el('div', { className: 'sbtw-field' }, [
+            el('span', { className: 'sbtw-field-label', text: 'Strangers' }),
+            el('div', { className: 'sbtw-button-row' }, [
+                button('Forget these strangers', 'sbtw-btn sbtw-btn-quiet', () => forgetStrangers(), {
+                    iconName: 'fa-arrows-rotate',
+                    title: 'Drop the passers-by this timeline keeps bringing back; the next refresh invents new ones',
+                    disabled: state.busy,
+                }),
+            ]),
+            el('span', { className: 'sbtw-hint', text: 'Their old posts stay as they are. The next refresh introduces a fresh set.' }),
         ]),
-        el('p', { className: 'sbtw-hint', text: 'Their old posts stay as they are. The next refresh introduces a fresh set.' }),
+        ]),
+
+        settingsGroup('Generation', 'Which connection writes, how much each refresh makes, pictures, tone and memory.', [
+        el('h4', { text: 'Connection' }),
+        field('Write posts with', profileSelect, 'A cheap model is fine here. One refresh writes the whole batch, or one activity per request with the option below.'),
+        field('Reply budget (tokens)', numberInput(settings.maxTokens, 256, 1000000, value => save({ maxTokens: value })),
+            'The most one reply may run to. Thinking models (Kimi, GLM, DeepSeek, Qwen...) spend part of it on their reasoning, and a budget that runs out mid-JSON is a malformed reply - so it is generous. Lower it only if your provider refuses the request.'),
+
+        el('h4', { text: 'How much each refresh makes' }),
         field('Accounts per refresh', activeMode),
         settings.active.mode === 'range'
             ? el('div', { className: 'sbtw-row' }, [
@@ -1980,13 +2013,6 @@ function settingsView() {
         settings.active.mode === 'exact'
             ? field('How many', numberInput(settings.active.count, 1, 100, value => savePart('active', { count: value })))
             : null,
-
-        el('h3', { text: 'Connection' }),
-        field('Write posts with', profileSelect, 'A cheap model is fine here. One refresh writes the whole batch, or one activity per request with the option below.'),
-        field('Reply budget (tokens)', numberInput(settings.maxTokens, 256, 1000000, value => save({ maxTokens: value })),
-            'The most one reply may run to. Thinking models (Kimi, GLM, DeepSeek, Qwen...) spend part of it on their reasoning, and a budget that runs out mid-JSON is a malformed reply - so it is generous. Lower it only if your provider refuses the request.'),
-
-        el('h3', { text: 'How much each refresh makes' }),
         el('div', { className: 'sbtw-row' }, [
             field('Posts', numberInput(settings.quotas.posts, 0, 100, value => savePart('quotas', { posts: value }))),
             field('Replies', numberInput(settings.quotas.replies, 0, 200, value => savePart('quotas', { replies: value }))),
@@ -2001,7 +2027,7 @@ function settingsView() {
             : null,
         el('p', { className: 'sbtw-hint', text: 'Each request returns one post or one reaction in a small JSON object, and the timeline fills in as they land. Posts above is how many.' }),
 
-        el('h3', { text: 'Pictures' }),
+        el('h4', { text: 'Pictures' }),
         checkbox('Generate images for some posts', settings.images.enabled, value => savePart('images', { enabled: value })),
         settings.images.enabled
             ? field('Images per refresh', numberInput(settings.images.perRefresh, 0, 50, value => savePart('images', { perRefresh: value })),
@@ -2015,7 +2041,7 @@ function settingsView() {
             }, [document.createTextNode(settings.images.instructions)]))
             : null,
 
-        el('h3', { text: 'Voice' }),
+        el('h4', { text: 'Voice' }),
         field('Tone instructions', el('textarea', {
             className: 'sbtw-input',
             attrs: { rows: '6', placeholder: 'Leave blank for the default.' },
@@ -2023,19 +2049,21 @@ function settingsView() {
         }, [document.createTextNode(settings.tone)]),
         'Only the tone. The rules that keep a refresh parseable are not editable, so you cannot break it from here.'),
 
-        el('h3', { text: 'How much history it reads' }),
+        el('h4', { text: 'How much history it reads' }),
         el('div', { className: 'sbtw-row' }, [
             field('Hours back', numberInput(settings.history.hours, 1, 720, value => savePart('history', { hours: value }))),
             field('Posts', numberInput(settings.history.posts, 1, 100, value => savePart('history', { posts: value }))),
             field('Replies per post', numberInput(settings.history.replies, 0, 12, value => savePart('history', { replies: value }))),
         ]),
         el('p', { className: 'sbtw-hint', text: 'What the model is shown of the timeline so far. This is most of every request, and it does not depend on how much a refresh writes - so a long window makes a small refresh just as slow and just as expensive. Raise it for longer memory, lower it for quicker, cheaper refreshes.' }),
+        ]),
 
-        el('h3', { text: 'The chat you have open' }),
+        settingsGroup('Chats', 'What the timeline reads from your open chat, feeds back into chats, and does when you return.', [
+        el('h4', { text: 'The chat you have open' }),
         checkbox('Let characters react to the roleplay', settings.scene.enabled, value => savePart('scene', { enabled: value })),
         el('p', { className: 'sbtw-hint', text: 'Sends the last few messages of the chat you have open to this timeline\'s model, so the characters in that scene can post about their own day. Only they may mention it. Off by default: with it on, chat text leaves the chat and goes wherever the connection above points.' }),
 
-        el('h3', { text: 'Feeding it back into chats' }),
+        el('h4', { text: 'Feeding it back into chats' }),
         checkbox('Mention recent activity in chats', settings.carry.enabled, value => savePart('carry', { enabled: value })),
         settings.carry.enabled
             ? el('div', { className: 'sbtw-row' }, [
@@ -2045,16 +2073,20 @@ function settingsView() {
             ])
             : null,
 
-        el('h3', { text: 'Catching up' }),
+        el('h4', { text: 'Catching up' }),
         field('Refresh on opening, if this many hours have passed',
             numberInput(settings.catchUpHours, 0, 720, value => save({ catchUpHours: value })),
             'Zero turns it off. Nothing happens while SillyBunny is closed - there is no server side to this.'),
+        ]),
 
-        el('h3', { text: 'Reset or delete' }),
-        el('p', { className: 'sbtw-hint', text: 'Reset clears posts, replies, likes, reposts and votes; profiles, follows and settings stay. Delete removes this whole timeline; other timelines and character profiles stay.' }),
-        el('div', { className: 'sbtw-button-row' }, [
-            button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetTimeline(), { disabled: state.busy }),
-            button('Delete this timeline', 'sbtw-btn sbtw-btn-danger', () => void deleteTimeline(), { iconName: 'fa-trash', disabled: state.busy }),
+        // Fenced and last, never inside a composer bar: that container drops button labels when narrow.
+        el('div', { className: 'sbtw-danger-zone', attrs: { role: 'group', 'aria-labelledby': 'sbtw-danger-title' } }, [
+            el('h3', { text: 'Reset or delete', attrs: { id: 'sbtw-danger-title' } }),
+            el('p', { className: 'sbtw-hint', text: 'Reset clears posts, replies, likes, reposts and votes; profiles, follows and settings stay. Delete removes this whole timeline; other timelines and character profiles stay.' }),
+            el('div', { className: 'sbtw-button-row' }, [
+                button('Reset the timeline', 'sbtw-btn sbtw-btn-danger', () => resetTimeline(), { iconName: 'fa-broom', disabled: state.busy }),
+                button('Delete this timeline', 'sbtw-btn sbtw-btn-danger', () => void deleteTimeline(), { iconName: 'fa-trash', disabled: state.busy }),
+            ]),
         ]),
     ]);
 }

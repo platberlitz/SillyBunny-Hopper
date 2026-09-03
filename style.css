@@ -1228,6 +1228,101 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     border-bottom: 1px solid var(--sbtw-divider);
 }
 
+/* Sub-headings inside a folded group: smaller and quieter than the field labels they sit above. */
+.sbtw-settings h4 {
+    margin: 1.1rem 0 0;
+    font-size: 0.8em;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--sbtw-muted);
+}
+
+.sbtw-settings h4:first-child {
+    margin-top: 0.5rem;
+}
+
+/* Folded groups: the daily settings stay open above; the plumbing lives here, closed by default. */
+.sbtw-settings-group {
+    margin: 0.9rem 0 0;
+    border: 1px solid var(--sbtw-divider);
+    border-radius: var(--sbtw-radius-button);
+    background: var(--sbtw-nav-surface);
+}
+
+.sbtw-settings-group > summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 0.75rem;
+    align-items: center;
+    padding: 0.7rem 0.9rem;
+    border-radius: inherit;
+    cursor: pointer;
+    list-style: none;
+}
+
+.sbtw-settings-group > summary::-webkit-details-marker {
+    display: none;
+}
+
+.sbtw-settings-group > summary > .sbtw-hint {
+    grid-column: 1;
+}
+
+/* A chevron drawn with borders so it needs no icon font; it flips when the group opens. */
+.sbtw-settings-group > summary::after {
+    content: '';
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    width: 0.5em;
+    height: 0.5em;
+    margin-right: 0.25em;
+    border-right: 2px solid var(--sbtw-muted);
+    border-bottom: 2px solid var(--sbtw-muted);
+    transform: translateY(-25%) rotate(45deg);
+    transition: transform var(--sbtw-transition);
+}
+
+.sbtw-settings-group[open] > summary::after {
+    transform: translateY(25%) rotate(-135deg);
+}
+
+.sbtw-settings-group > summary:hover {
+    background: var(--sbtw-hover);
+}
+
+.sbtw-settings-group[open] > summary {
+    border-bottom: 1px solid var(--sbtw-divider);
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.sbtw-settings-group-title {
+    font-weight: 600;
+}
+
+.sbtw-settings-group-body {
+    padding: 0.2rem 0.9rem 0.9rem;
+}
+
+/* The destructive pair, fenced and last. */
+.sbtw-danger-zone {
+    margin: 1.4rem 0 0;
+    padding: 0.2rem 0.9rem 0.9rem;
+    border: 1px solid var(--sbtw-danger-border);
+    border-radius: var(--sbtw-radius-button);
+}
+
+/* The host boxes every h3; inside the fence that would be a card in a card. Specificity outranks its :not() chain. */
+#sheld[data-sbtw-mode='on'] .sbtw-danger-zone h3 {
+    margin: 0.7rem 0 0.2rem;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+    color: var(--sbtw-danger);
+}
+
 .sbtw-field {
     display: flex;
     flex-direction: column;
@@ -1331,6 +1426,7 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
     .sbtw-notification,
     .sbtw-poll-option,
     .sbtw-btn,
+    .sbtw-settings-group > summary,
     .sbtw-shell .sbtw-trend {
         min-height: 44px;
     }
@@ -1416,7 +1512,8 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 
 @media (prefers-reduced-motion: reduce) {
     .sbtw-action,
-    .sbtw-poll-bar {
+    .sbtw-poll-bar,
+    .sbtw-settings-group > summary::after {
         transition: none;
     }
 
@@ -1426,7 +1523,8 @@ body:has(> #sheld[data-sbtw-mode='on']) :is(
 }
 
 body.reduced-motion .sbtw-action,
-body.reduced-motion .sbtw-poll-bar {
+body.reduced-motion .sbtw-poll-bar,
+body.reduced-motion .sbtw-settings-group > summary::after {
     transition: none;
 }
 
